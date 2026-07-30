@@ -1,0 +1,11 @@
+title = "proton-mail-bridge-docker Gitleaks Config"
+
+# This check matters more here than in most projects: a Proton password or a
+# bridge password committed by accident would hand over an entire mailbox.
+# Only files that cannot hold real values are excluded.
+
+[allowlist]
+paths = [
+  '''\.env\.example''',
+  '''proto/bridge\.proto''',
+]

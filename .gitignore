@@ -1,0 +1,39 @@
+# Build artefacts
+/bridge-control
+/dist/
+*.exe
+
+# Generated gRPC code
+/internal/protonapi/*.pb.go
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Local container state (holds the keychain and decrypted mail)
+data/
+volume/
+
+# Logs
+*.log
+
+# Editors and operating system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Scratch space
+scratch/
+tmp/
+
+# Local working material, kept out of the public repository
+/.agents
+/.claude
+/AGENTS.md
+/CLAUDE.md
+/scripts/ci/
