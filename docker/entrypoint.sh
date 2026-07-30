@@ -2,27 +2,18 @@
 #
 # Container entrypoint for the Proton Mail Bridge.
 #
-# It does three things the bridge cannot do for itself in a container: give it
-# a keychain, keep everything it writes inside one volume, and make its mail
-# ports reachable from outside the container.
+# It does the two things that have to happen before anything can talk to the
+# bridge at all: make the volume usable, and put a keychain in a container that
+# has none. Then it hands over to bridge-control and disappears.
 #
 # This stays deliberately thin. Anything that needs to talk to the bridge over
-# gRPC belongs in bridge-control, not here.
+# gRPC belongs in bridge-control, not here. That includes the mail port
+# forwarding, which used to live here: it has to happen after the ports are
+# known, and the ports are only known over gRPC.
 
 set -euo pipefail
 
 readonly VOLUME="${BRIDGE_HOME:-/data}"
-readonly LOG_LEVEL="${BRIDGE_LOG_LEVEL:-info}"
-readonly IMAP_PORT="${BRIDGE_IMAP_PORT:-1143}"
-readonly SMTP_PORT="${BRIDGE_SMTP_PORT:-1025}"
-
-# How long to wait for the bridge to start listening before giving up on
-# forwarding a port. The bridge opens both ports even with no account signed
-# in, so in practice this is a couple of seconds; the timeout only matters if
-# it picked a different port than expected.
-readonly FORWARD_TIMEOUT="${BRIDGE_FORWARD_TIMEOUT:-60}"
-
-bridge_pid=""
 
 log() {
     printf '%s  entrypoint  %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
@@ -105,102 +96,18 @@ setup_pass_store() {
 }
 
 # --------------------------------------------------------------------------
-# Port forwarding
-# --------------------------------------------------------------------------
-
-# The bridge binds IMAP and SMTP on 127.0.0.1 only, and refuses to be talked
-# out of it. Inside a container that means nothing outside can reach them.
-#
-# socat listens on the container's own address and forwards to the loopback
-# one, so the bridge still sees a local connection. The port number stays the
-# same on both sides: two different addresses, no conflict.
-#
-# Order matters. The bridge picks its ports by asking the kernel which ones are
-# free, and it checks the wildcard address as well as loopback. If socat bound
-# the port first, the bridge would move to the next one. So the bridge always
-# goes first and socat only follows once the port is actually listening.
-container_address() {
-    hostname -I 2>/dev/null | awk '{ print $1 }'
-}
-
-# Reads /proc/net/tcp rather than opening a connection: a probe against the
-# IMAP port would show up as a real client session in the bridge log.
-is_listening() {
-    local port_hex
-    port_hex="$(printf '%04X' "$1")"
-
-    # Field 2 is the local address as ADDRESS:PORT, field 4 is the state.
-    # 0A is TCP_LISTEN.
-    awk -v suffix=":$port_hex" '
-        $2 ~ suffix"$" && $4 == "0A" { found = 1 }
-        END { exit !found }
-    ' /proc/net/tcp
-}
-
-forward_port() {
-    local port="$1" label="$2" address="$3"
-    local waited=0
-
-    while ! is_listening "$port"; do
-        if [ "$waited" -ge "$FORWARD_TIMEOUT" ]; then
-            log "WARNING: the bridge did not open $label port $port within ${FORWARD_TIMEOUT}s, so it stays unreachable from outside the container. It may have picked a different port; check the bridge log above."
-            return 0
-        fi
-        sleep 2
-        waited=$((waited + 2))
-    done
-
-    log "Forwarding $label: $address:$port to 127.0.0.1:$port"
-    socat "TCP-LISTEN:$port,bind=$address,fork,reuseaddr" "TCP:127.0.0.1:$port" &
-}
-
-start_forwarding() {
-    local address
-    address="$(container_address)"
-
-    if [ -z "$address" ]; then
-        log "WARNING: could not determine the container address, mail ports stay on loopback only."
-        return 0
-    fi
-
-    forward_port "$IMAP_PORT" IMAP "$address" &
-    forward_port "$SMTP_PORT" SMTP "$address" &
-}
-
-# --------------------------------------------------------------------------
-# Lifecycle
-# --------------------------------------------------------------------------
-
-shutdown() {
-    log "Shutting down."
-    if [ -n "$bridge_pid" ] && kill -0 "$bridge_pid" 2>/dev/null; then
-        kill -TERM "$bridge_pid" 2>/dev/null || true
-        wait "$bridge_pid" 2>/dev/null || true
-    fi
-    exit 0
-}
 
 main() {
     prepare_volume
     setup_gpg_key
     setup_pass_store
 
-    trap shutdown TERM INT
+    log "Handing over to bridge-control."
 
-    log "Starting the bridge."
-    bridge --noninteractive --log-level "$LOG_LEVEL" &
-    bridge_pid=$!
-
-    start_forwarding
-
-    # `wait` returns on every signal, not only when the process ends, so it is
-    # retried until the bridge is genuinely gone. Its exit status is the
-    # bridge's own and is not interesting here; the loop condition decides.
-    while kill -0 "$bridge_pid" 2>/dev/null; do
-        wait "$bridge_pid" || true
-    done
-
-    log "The bridge exited."
+    # exec rather than a background process: bridge-control is what has to
+    # receive SIGTERM from the container runtime, and a shell in between would
+    # have to forward it correctly to gain nothing.
+    exec bridge-control
 }
 
 main "$@"
