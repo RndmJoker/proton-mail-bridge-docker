@@ -112,4 +112,21 @@ jobs:
       - name: Gitleaks
         run: |
           wget -qO- https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz | tar xz
-          ./gitleaks detect --source . --verbose --no-banner
+
+          # The config is passed explicitly rather than left to discovery, and
+          # the job refuses to run without one.
+          #
+          # Measured on 2026-07-30 with gitleaks 8.24.3: when no .gitleaks.toml
+          # is present, `gitleaks detect` reports a planted token as clean and
+          # exits 0, while logging "using default gitleaks config". The same
+          # file scanned with a config of only `[extend] useDefault = true`
+          # reports "leaks found: 1".
+          #
+          # Discovery of an existing file works reliably, so this job was never
+          # blind. What it could not survive is the file being renamed, moved or
+          # deleted: that would have turned this check green forever instead of
+          # breaking the build. The two guards below make that impossible.
+          test -f .gitleaks.toml || { echo "::error::.gitleaks.toml is missing"; exit 1; }
+          grep -q useDefault .gitleaks.toml || { echo "::error::.gitleaks.toml does not extend the built-in rules"; exit 1; }
+
+          ./gitleaks detect --source . --config .gitleaks.toml --verbose --no-banner
