@@ -37,7 +37,7 @@ fail() { printf '  FAIL  %s\n' "$*"; failures=$((failures + 1)); }
 
 cleanup() {
     local name
-    for name in "$CONTAINER" "$CONTAINER-alt" "$CONTAINER-plain" "$CONTAINER-configured"; do
+    for name in "$CONTAINER" "$CONTAINER-alt" "$CONTAINER-plain" "$CONTAINER-configured" "$CONTAINER-exposed" "$CONTAINER-closed"; do
         "$ENGINE" rm -f "$name" >/dev/null 2>&1 || true
     done
 
@@ -166,6 +166,7 @@ log "Starting the container with an empty volume"
     --name "$CONTAINER" \
     -v "$volume_dir:/data:Z" \
     -p "127.0.0.1::1143" \
+    -p "127.0.0.1::8443" \
     "$IMAGE" >/dev/null
 
 sleep "$STARTUP_SECONDS"
@@ -341,6 +342,51 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# The sign-in page runs, and is not reachable from outside
+# --------------------------------------------------------------------------
+
+# No account is signed in, so the page has to be up. And it has to be up where
+# nobody outside the container can get at it: it accepts a Proton password, and
+# the default is not to expose that to anything.
+
+log "Sign-in page, not exposed"
+
+if printf '%s\n' "$container_logs" | grep -q 'The sign-in page is at https://127.0.0.1:'; then
+    ok "the sign-in page is running, bound inside the container"
+else
+    fail "no sign-in page although no account is signed in"
+fi
+
+setup_fingerprint="$(printf '%s\n' "$container_logs" | sed -n 's/.*Certificate fingerprint (SHA-256): //p' | head -n1)"
+
+if printf '%s' "$setup_fingerprint" | grep -qE '^[0-9A-F]{2}(:[0-9A-F]{2}){31}$'; then
+    ok "the fingerprint is in the log, where it can be compared: ${setup_fingerprint:0:17}..."
+else
+    fail "no usable certificate fingerprint in the log"
+fi
+
+# A token only exists when the page is exposed. Printing one here would mean
+# either the page is exposed when it should not be, or a secret is being
+# written to the log for nothing.
+if printf '%s\n' "$container_logs" | grep -q 'Access token for the sign-in page'; then
+    fail "an access token was printed although the page is not exposed"
+else
+    ok "no access token was printed, because none is needed"
+fi
+
+# The counter-check that matters. The port is published, so anything that
+# answers here would be reachable from the host, and from wherever the host is.
+setup_host_port="$("$ENGINE" port "$CONTAINER" 8443/tcp 2>/dev/null | head -n1 | sed 's/.*://')"
+
+if [ -z "$setup_host_port" ]; then
+    fail "port 8443 is not mapped, so this check cannot tell anything"
+elif curl -sk --max-time 5 "https://127.0.0.1:$setup_host_port/" >/dev/null 2>&1; then
+    fail "the sign-in page answered from outside the container although it is not exposed"
+else
+    ok "the sign-in page does not answer from outside, even with the port published"
+fi
+
+# --------------------------------------------------------------------------
 # The vault key survives a restart
 # --------------------------------------------------------------------------
 
@@ -504,6 +550,168 @@ if printf '%s\n' "$alt_logs" | grep -q 'Forwarding IMAP: .*:1143'; then
 else
     ok "nothing is left listening on the default IMAP port"
 fi
+
+# --------------------------------------------------------------------------
+# The exposed sign-in page is guarded
+# --------------------------------------------------------------------------
+
+# Everything above keeps the page away from the network. This is the other
+# half: when it is deliberately opened, what stands between it and whoever can
+# reach it.
+#
+# It reuses the volume from the update checks, so the certificate is the one
+# that was already there. That is the point of keeping it in the volume, and
+# it is checked below rather than assumed.
+
+log "Sign-in page, exposed"
+
+readonly EXPOSED_CONTAINER="$CONTAINER-exposed"
+
+"$ENGINE" run -d \
+    --name "$EXPOSED_CONTAINER" \
+    -v "$update_volume_dir:/data:Z" \
+    -e "BRIDGE_SETUP_EXPOSE=true" \
+    -p "127.0.0.1::8443" \
+    "$IMAGE" >/dev/null
+
+sleep "$STARTUP_SECONDS"
+
+exposed_logs="$("$ENGINE" logs "$EXPOSED_CONTAINER" 2>&1)"
+
+exposed_fingerprint="$(printf '%s\n' "$exposed_logs" | sed -n 's/.*Certificate fingerprint (SHA-256): //p' | head -n1)"
+
+exposed_port="$("$ENGINE" port "$EXPOSED_CONTAINER" 8443/tcp 2>/dev/null | head -n1 | sed 's/.*://')"
+
+setup_token="$(printf '%s\n' "$exposed_logs" | sed -n 's/.*Access token: //p' | head -n1)"
+
+if [ -n "$setup_token" ]; then
+    ok "the access token is in the log, where the operator reads it"
+else
+    fail "no access token in the log, so there is no way to use the exposed page"
+fi
+
+# The same token has to be in the volume as well, because that is where
+# proton-login reads it from. Compared rather than merely present: two
+# different values would mean the terminal way in stops working the moment the
+# page is exposed.
+stored_token="$("$ENGINE" exec "$EXPOSED_CONTAINER" cat /data/config/protonmail/bridge-v3/setup/token 2>/dev/null || true)"
+
+if [ -n "$stored_token" ] && [ "$stored_token" = "$setup_token" ]; then
+    ok "the same token is in the volume, where proton-login reads it"
+else
+    fail "the token in the volume does not match the one in the log"
+fi
+
+if "$ENGINE" exec "$EXPOSED_CONTAINER" stat -c '%a' /data/config/protonmail/bridge-v3/setup/token 2>/dev/null | grep -q '^600$'; then
+    ok "the token file is not readable by anyone else"
+else
+    fail "the token file has the wrong mode"
+fi
+
+# Both addresses the container can actually know. The host address is not among
+# them and cannot be: port publishing happens outside, and the container sees
+# neither the address nor the port it landed on.
+if printf '%s\n' "$exposed_logs" | grep -q 'https://127.0.0.1:8443/' \
+    && printf '%s\n' "$exposed_logs" | grep -qE 'https://[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:8443/'; then
+    ok "the log shows both reachable addresses in full"
+else
+    fail "the log does not show both addresses"
+fi
+
+if [ -z "$exposed_port" ]; then
+    fail "port 8443 is not mapped"
+else
+    # The page itself has to be reachable without the token: it is where the
+    # token gets typed in.
+    page="$(curl -sk --max-time 10 "https://127.0.0.1:$exposed_port/" 2>/dev/null || true)"
+
+    if printf '%s' "$page" | grep -q 'Sign in to Proton Mail Bridge'; then
+        ok "the page answers when exposed"
+    else
+        fail "the exposed page did not answer"
+    fi
+
+    # The fingerprint a person compares has to be the one on the page, or
+    # comparing it proves nothing.
+    if [ -n "$exposed_fingerprint" ] && printf '%s' "$page" | grep -qF "$exposed_fingerprint"; then
+        ok "the fingerprint on the page matches the one in the log"
+    else
+        fail "the fingerprint on the page does not match the log"
+    fi
+
+    # It is the same volume as the update checks used, so this is the same
+    # certificate that container created. A new one here would mean the
+    # fingerprint changes whenever the container is replaced, which makes it
+    # worthless as something to compare against.
+    if [ -n "$exposed_fingerprint" ] && [ "$exposed_fingerprint" != "$setup_fingerprint" ]; then
+        ok "the certificate in this volume is its own, kept across containers"
+    else
+        fail "two different volumes produced the same fingerprint, so it is not per-installation"
+    fi
+
+    # Without the token, nothing.
+    status_code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' "https://127.0.0.1:$exposed_port/api/status" 2>/dev/null || true)"
+
+    if [ "$status_code" = "401" ]; then
+        ok "the API refuses a request without the token"
+    else
+        fail "the API answered $status_code without a token, expected 401"
+    fi
+
+    status_code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' \
+        -H "X-Setup-Token: not-the-token" \
+        "https://127.0.0.1:$exposed_port/api/status" 2>/dev/null || true)"
+
+    if [ "$status_code" = "401" ]; then
+        ok "a wrong token is no better than none"
+    else
+        fail "a wrong token got $status_code, expected 401"
+    fi
+
+    # With the token but without the CSRF header. This is the request a page on
+    # another site could cause a browser to make.
+    status_code="$(curl -sk --max-time 10 -o /dev/null -w '%{http_code}' \
+        -X POST \
+        -H "X-Setup-Token: $setup_token" \
+        -H 'Content-Type: application/json' \
+        -d '{"username":"nobody@example.invalid","secret":"not-a-real-password"}' \
+        "https://127.0.0.1:$exposed_port/api/login" 2>/dev/null || true)"
+
+    if [ "$status_code" = "403" ]; then
+        ok "a write without the CSRF token is refused, even with a valid access token"
+    else
+        fail "a write without the CSRF token got $status_code, expected 403"
+    fi
+
+    # No sign-in is attempted anywhere in this test. The request above is
+    # refused before it reaches the bridge, which is why it can carry an
+    # invented address without ever touching Proton.
+fi
+
+"$ENGINE" rm -f "$EXPOSED_CONTAINER" >/dev/null 2>&1 || true
+
+# A token belongs to the page that issued it and to nothing else. Starting the
+# same volume without exposure has to leave nothing behind, or a value that
+# stopped meaning anything would sit in the volume looking like a live one.
+
+log "A token does not outlive its page"
+
+readonly CLOSED_CONTAINER="$CONTAINER-closed"
+
+"$ENGINE" run -d \
+    --name "$CLOSED_CONTAINER" \
+    -v "$update_volume_dir:/data:Z" \
+    "$IMAGE" >/dev/null
+
+sleep "$STARTUP_SECONDS"
+
+if "$ENGINE" exec "$CLOSED_CONTAINER" test -f /data/config/protonmail/bridge-v3/setup/token 2>/dev/null; then
+    fail "the token from the exposed run is still in the volume"
+else
+    ok "the token from the exposed run is gone"
+fi
+
+"$ENGINE" rm -f "$CLOSED_CONTAINER" >/dev/null 2>&1 || true
 
 # --------------------------------------------------------------------------
 
