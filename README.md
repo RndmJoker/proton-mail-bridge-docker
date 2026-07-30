@@ -12,7 +12,7 @@ Early development. This section always states what actually works, not what is p
 | :--- | :--- |
 | Project skeleton and CI | done |
 | Image with a running bridge core | done |
-| `bridge-control`: gRPC control, environment variables | planned |
+| `bridge-control`: gRPC control, environment variables | done |
 | Setup web page and `proton-login` | planned |
 | Workflow that rebuilds on every new bridge release | planned |
 
@@ -50,7 +50,7 @@ docker build \
   -f docker/Dockerfile -t proton-mail-bridge:local .
 ```
 
-The build fetches the bridge source from Proton at the commit recorded in [`docker/bridge-version`](docker/bridge-version) and compiles it with `make build-nogui`. It takes a few minutes; nothing is downloaded prebuilt.
+The build fetches the bridge source from Proton at the commit recorded in [`docker/bridge-version`](docker/bridge-version) and compiles it with `make build-nogui`. It takes a few minutes; nothing is downloaded prebuilt. In a second stage it builds `bridge-control` and `proton-info` from this repository, including the gRPC client, which is generated during the build rather than kept in the repository. See [`proto/README.md`](proto/README.md).
 
 Then start it:
 
@@ -63,6 +63,18 @@ docker run -d --name proton-bridge \
 ```
 
 At this point the bridge is running with no account, so IMAP answers but has nothing to serve. Signing in comes with the next release.
+
+### What runs inside
+
+`bridge-control` is what turns "a bridge that runs" into "a container that can be configured". It starts the bridge core, connects to the same gRPC interface Proton's own window uses, applies the settings from the environment, turns off the bridge's self-updater, and forwards the mail ports. If any of that fails the container stops rather than running in a state its log does not describe.
+
+`proton-info` prints what you need once an account is signed in:
+
+```bash
+docker exec proton-bridge proton-info
+```
+
+It shows the bridge password, the addresses, the ports actually in use and the fingerprint of the self-signed certificate your mail client will ask about. It prints on request only, never at startup and never into the log, because the bridge password is a credential and a credential in a log file travels into every bug report that log is attached to.
 
 **Bind mounts need two things a named volume gives you for free.** The container runs as uid 1000 and never as root, so it cannot fix ownership itself:
 
@@ -78,9 +90,14 @@ Without the `:Z` the container is denied access on an enforcing system, and the 
 | Variable | Default | Meaning |
 | :--- | :--- | :--- |
 | `BRIDGE_LOG_LEVEL` | `info` | One of `panic`, `fatal`, `error`, `warn`, `info`, `debug` |
-| `BRIDGE_IMAP_PORT` | `1143` | Port forwarded to the bridge's IMAP listener |
-| `BRIDGE_SMTP_PORT` | `1025` | Port forwarded to the bridge's SMTP listener |
-| `BRIDGE_FORWARD_TIMEOUT` | `60` | Seconds to wait for those ports before giving up on forwarding them |
+| `BRIDGE_IMAP_PORT` | `1143` | Port the bridge serves IMAP on, inside the container and outside |
+| `BRIDGE_SMTP_PORT` | `1025` | Port the bridge serves SMTP on, inside the container and outside |
+| `BRIDGE_IMAP_SSL` | `false` | Direct TLS instead of STARTTLS for IMAP |
+| `BRIDGE_SMTP_SSL` | `false` | Direct TLS instead of STARTTLS for SMTP |
+| `BRIDGE_START_TIMEOUT` | `120` | Seconds to wait for the bridge's gRPC service before giving up |
+| `BRIDGE_FORWARD_TIMEOUT` | `60` | Seconds to wait for a mail port before giving up on forwarding it |
+
+A commented copy is in [`.env.example`](.env.example). An unreadable value is refused at startup rather than silently replaced by a default: a container that quietly listens somewhere other than it was told to is worse than one that does not start.
 
 Your Proton credentials are not in that table and never will be. See [Security](#security-before-anything-else).
 
@@ -88,7 +105,7 @@ Your Proton credentials are not in that table and never will be. See [Security](
 
 The bridge binds IMAP and SMTP on `127.0.0.1` only. Inside a container that means nothing outside can reach them, no matter how the ports are published. `socat` listens on the container's own address and forwards to the loopback one, so the bridge still sees a local connection and the port number stays the same on both sides.
 
-The entrypoint starts it only after the bridge is listening. The other way round, the bridge would find its port taken and quietly move to the next one.
+`bridge-control` starts it only after the bridge is listening. The other way round, the bridge would find its port taken and quietly move to the next one.
 
 ## Limitations
 
@@ -101,7 +118,14 @@ These come from the bridge itself or from running inside a container. They will 
 
 ## Relation to proton-mcp
 
-This image is the companion to proton-mcp, an MCP server that speaks IMAP and SMTP to a running bridge. Map the container ports to `127.0.0.1` on the host and proton-mcp connects to them the way it would to a bridge on a desktop.
+[proton-mcp](https://github.com/RndmJoker/proton-mcp) is an MCP server that speaks IMAP and SMTP to a running bridge and exposes the mailbox to an assistant. The two projects fit together, but neither needs the other:
+
+- **This image** runs the bridge where there is no desktop to run the official application on.
+- **proton-mcp** connects to a bridge, whether that bridge runs in this container or on a desktop.
+
+Map the container ports to `127.0.0.1` on the host and proton-mcp connects to them the way it would to a bridge on a desktop.
+
+If the two run on different machines, the mail ports have to be reachable across that gap, which is exactly the situation this readme warns about. Use a tunnel or a VPN, never an open port. Decrypted mail crosses that connection.
 
 ## Releases
 
