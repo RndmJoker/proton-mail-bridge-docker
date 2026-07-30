@@ -193,10 +193,11 @@ main() {
 
     start_forwarding
 
-    # `wait` on its own returns on every signal, so it is retried until the
-    # bridge is genuinely gone.
+    # `wait` returns on every signal, not only when the process ends, so it is
+    # retried until the bridge is genuinely gone. Its exit status is the
+    # bridge's own and is not interesting here; the loop condition decides.
     while kill -0 "$bridge_pid" 2>/dev/null; do
-        wait "$bridge_pid" && break || true
+        wait "$bridge_pid" || true
     done
 
     log "The bridge exited."

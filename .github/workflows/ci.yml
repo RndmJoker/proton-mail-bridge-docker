@@ -18,6 +18,11 @@ jobs:
 
       # The entrypoint runs unattended inside a container. A typo in it would
       # otherwise surface on a user's machine, not here.
+      #
+      # Pinned rather than using the runner's preinstalled shellcheck, whose
+      # version nobody controls. An unpinned one reports different findings
+      # than a contributor gets locally, and changes under us when the runner
+      # image is updated.
       - name: Shellcheck
         run: |
           files=$(find docker scripts -name '*.sh' 2>/dev/null || true)
@@ -26,8 +31,11 @@ jobs:
             exit 0
           fi
           echo "$files"
+          wget -qO- https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
+            | tar xJ
+          ./shellcheck-v0.11.0/shellcheck --version
           # shellcheck disable=SC2086
-          shellcheck $files
+          ./shellcheck-v0.11.0/shellcheck $files
 
   dockerfile:
     name: Dockerfile
