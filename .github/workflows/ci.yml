@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The entrypoint runs unattended inside a container. A typo in it would
+      # otherwise surface on a user's machine, not here.
+      - name: Shellcheck
+        run: |
+          files=$(find docker scripts -name '*.sh' 2>/dev/null || true)
+          if [ -z "$files" ]; then
+            echo "No shell scripts yet, nothing to check."
+            exit 0
+          fi
+          echo "$files"
+          # shellcheck disable=SC2086
+          shellcheck $files
+
+  dockerfile:
+    name: Dockerfile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Hadolint
+        run: |
+          if [ ! -f docker/Dockerfile ]; then
+            echo "No Dockerfile yet, nothing to check."
+            exit 0
+          fi
+          curl -sSLo hadolint \
+            https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-Linux-x86_64
+          chmod +x hadolint
+          ./hadolint docker/Dockerfile
+
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for a Go module
+        id: mod
+        run: |
+          if [ -f go.mod ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No Go module yet, tests skipped."
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.mod.outputs.present == 'true'
+        with:
+          go-version-file: go.mod
+
+      - name: Vet and test
+        if: steps.mod.outputs.present == 'true'
+        run: |
+          go vet ./...
+          go test ./...
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Gitleaks needs the history to scan past commits, not just the tree.
+          fetch-depth: 0
+
+      - name: Gitleaks
+        run: |
+          wget -qO- https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz | tar xz
+          ./gitleaks detect --source . --verbose --no-banner
+
+  tag:
+    name: Tag release
+    needs: [shell, dockerfile, go, secrets]
+    if: github.event_name == 'push' && github.ref_name == 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # The project version lives in the VERSION file. Every version that
+      # reaches main gets a tag, so an image can always be traced back.
+      - name: Create tag from VERSION
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          tag="v${version}"
+
+          if gh api "repos/${{ github.repository }}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already exists, nothing to do."
+            exit 0
+          fi
+
+          echo "Creating tag ${tag} on ${{ github.sha }}"
+          gh api "repos/${{ github.repository }}/git/refs" \
+            -f ref="refs/tags/${tag}" \
+            -f sha="${{ github.sha }}"
