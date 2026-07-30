@@ -20,6 +20,7 @@ import (
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/bridgeclient"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/bridgepb"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/certinfo"
+	"github.com/RndmJoker/proton-mail-bridge-docker/internal/control"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/info"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -99,6 +100,14 @@ func collect(ctx context.Context, client *bridgeclient.Client) (info.Report, err
 		report.FingerprintErr = err.Error()
 	} else {
 		report.Fingerprint = certinfo.Fingerprint(cert)
+	}
+
+	// Read rather than assumed. bridge-control turns this off at startup and
+	// refuses to carry on if it does not stick, but this program also runs
+	// days later, against a bridge nothing in this process configured.
+	report.AutomaticUpdates, err = control.AutomaticUpdatesOn(ctx, client)
+	if err != nil {
+		return report, err
 	}
 
 	users, err := client.GetUserList(ctx, &emptypb.Empty{})

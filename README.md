@@ -74,7 +74,16 @@ At this point the bridge is running with no account, so IMAP answers but has not
 docker exec proton-bridge proton-info
 ```
 
-It shows the bridge password, the addresses, the ports actually in use and the fingerprint of the self-signed certificate your mail client will ask about. It prints on request only, never at startup and never into the log, because the bridge password is a credential and a credential in a log file travels into every bug report that log is attached to.
+It shows the bridge password, the addresses, the ports actually in use, the fingerprint of the self-signed certificate your mail client will ask about, and whether the bridge's own updater is off. It prints on request only, never at startup and never into the log, because the bridge password is a credential and a credential in a log file travels into every bug report that log is attached to.
+
+Arguments after the image name replace `bridge-control`, after the volume and the keychain have been prepared either way:
+
+```bash
+docker run --rm proton-mail-bridge:local bridge --version
+docker run --rm -it -v proton-bridge-data:/data proton-mail-bridge:local bash
+```
+
+That is a way in for troubleshooting. It is also how the smoke test gets an unconfigured bridge to compare against.
 
 **Bind mounts need two things a named volume gives you for free.** The container runs as uid 1000 and never as root, so it cannot fix ownership itself:
 
