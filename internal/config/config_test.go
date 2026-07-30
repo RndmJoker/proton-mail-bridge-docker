@@ -18,6 +18,8 @@ func clearEnv(t *testing.T) {
 		"BRIDGE_LOG_LEVEL",
 		"BRIDGE_FORWARD_TIMEOUT",
 		"BRIDGE_START_TIMEOUT",
+		"BRIDGE_SETUP_PORT",
+		"BRIDGE_SETUP_EXPOSE",
 	} {
 		t.Setenv(name, "")
 	}
@@ -49,6 +51,16 @@ func TestFromEnvDefaults(t *testing.T) {
 
 	if config.ForwardTimeout != DefaultForwardTimeout {
 		t.Errorf("forward timeout: got %v, want %v", config.ForwardTimeout, DefaultForwardTimeout)
+	}
+
+	if config.SetupPort != DefaultSetupPort {
+		t.Errorf("setup port: got %d, want %d", config.SetupPort, DefaultSetupPort)
+	}
+
+	// The page that accepts a Proton password is not something to open by
+	// accident. Off unless somebody says otherwise, every time.
+	if config.SetupExpose {
+		t.Error("the sign-in page defaults to being exposed beyond the container")
 	}
 }
 
@@ -118,6 +130,25 @@ func TestFromEnvRejects(t *testing.T) {
 			// services would be unreachable, without any error anywhere.
 			name: "the same port twice",
 			env:  map[string]string{"BRIDGE_IMAP_PORT": "1143", "BRIDGE_SMTP_PORT": "1143"},
+		},
+		{
+			// Three listening sockets in one container. The sign-in page and a
+			// mail port on the same number means one of them silently loses,
+			// and which one depends on start order.
+			name: "the sign-in page on the IMAP port",
+			env:  map[string]string{"BRIDGE_SETUP_PORT": "1143"},
+		},
+		{
+			name: "the sign-in page on the SMTP port",
+			env:  map[string]string{"BRIDGE_SETUP_PORT": "1025"},
+		},
+		{
+			name: "a privileged port for the sign-in page",
+			env:  map[string]string{"BRIDGE_SETUP_PORT": "443"},
+		},
+		{
+			name: "an exposure flag that is not a truth value",
+			env:  map[string]string{"BRIDGE_SETUP_EXPOSE": "sure"},
 		},
 		{
 			name: "a log level the bridge does not know",

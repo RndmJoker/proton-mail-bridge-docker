@@ -188,6 +188,10 @@ func configure(ctx context.Context, cfg config.Config, configPath string, bridge
 	logf("Applied settings: IMAP %d (ssl=%v), SMTP %d (ssl=%v), automatic updates off",
 		cfg.IMAPPort, cfg.IMAPSSL, cfg.SMTPPort, cfg.SMTPSSL)
 
+	// Runs for the life of the process: the sign-in page comes and goes with
+	// the account, not with the startup.
+	go runSignIn(ctx, cfg, client)
+
 	return startForwarding(ctx, cfg)
 }
 
