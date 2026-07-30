@@ -1,5 +1,12 @@
 title = "proton-mail-bridge-docker Gitleaks Config"
 
+# A config file REPLACES the built-in rules rather than adding to them.
+# Without the extend block below there would be zero rules and every scan
+# would pass, whatever the commit contains. Verified on 2026-07-30: a
+# private key in a test commit went unnoticed until this was added.
+[extend]
+useDefault = true
+
 # This check matters more here than in most projects: a Proton password or a
 # bridge password committed by accident would hand over an entire mailbox.
 # Only files that cannot hold real values are excluded.
