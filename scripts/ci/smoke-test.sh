@@ -36,19 +36,24 @@ ok()    { printf '  ok    %s\n' "$*"; }
 fail() { printf '  FAIL  %s\n' "$*"; failures=$((failures + 1)); }
 
 cleanup() {
-    "$ENGINE" rm -f "$CONTAINER" >/dev/null 2>&1 || true
-    "$ENGINE" rm -f "$CONTAINER-alt" >/dev/null 2>&1 || true
+    local name
+    for name in "$CONTAINER" "$CONTAINER-alt" "$CONTAINER-plain" "$CONTAINER-configured"; do
+        "$ENGINE" rm -f "$name" >/dev/null 2>&1 || true
+    done
 
-    # The volume was written by uid 1000 inside the container. Under a rootless
-    # engine that maps to a subordinate uid on the host, and mode 0700 then
-    # stops the host user from deleting any of it. So a throwaway container
-    # empties the directory first.
-    if [ -n "${volume_dir:-}" ]; then
-        "$ENGINE" run --rm --user 0 -v "$volume_dir:/data:Z" \
+    # The volumes were written by uid 1000 inside the container. Under a
+    # rootless engine that maps to a subordinate uid on the host, and mode 0700
+    # then stops the host user from deleting any of it. So a throwaway
+    # container empties each directory first.
+    local dir
+    for dir in "${volume_dir:-}" "${update_volume_dir:-}"; do
+        [ -n "$dir" ] || continue
+
+        "$ENGINE" run --rm --user 0 -v "$dir:/data:Z" \
             --entrypoint sh "$IMAGE" -c 'rm -rf /data/* /data/.[!.]*' \
             >/dev/null 2>&1 || true
-        rm -rf "$volume_dir" 2>/dev/null || true
-    fi
+        rm -rf "$dir" 2>/dev/null || true
+    done
 }
 
 # --------------------------------------------------------------------------
@@ -295,11 +300,8 @@ else
     fail "bridge-control never reported a connection, so nothing was configured"
 fi
 
-# Reaching this point at all is the proof that automatic updates were turned
-# off: bridge-control treats a failure of that call as fatal and exits, so a
-# container that is still running is one where the call succeeded. There is no
-# way to read the setting back from outside, which is why it is arranged this
-# way rather than checked here.
+# Only that the log says so. Whether it is true is measured further down,
+# against the setting itself, on a vault that had it on beforehand.
 if printf '%s\n' "$container_logs" | grep -q 'automatic updates off'; then
     ok "settings were applied and automatic updates were turned off"
 else
@@ -376,6 +378,65 @@ elif [ "$generated" -gt 1 ]; then
 else
     fail "the first start did not log a key generation at all, so this check no longer measures anything"
 fi
+
+# --------------------------------------------------------------------------
+# The bridge's own updater is off, and was on before
+# --------------------------------------------------------------------------
+
+# Reading "off" on its own proves nothing: it would look the same if the
+# setting had never been touched. So the same vault is looked at twice. First
+# with the bridge started on its own, bypassing bridge-control, where the
+# setting has to be the bridge's own default of on. Then with bridge-control,
+# where it has to be off.
+#
+# Anything less is a check that cannot fail. The value lives in the vault and
+# survives restarts, so a single reading says nothing about who wrote it.
+
+log "Automatic updates"
+
+update_volume_dir="$(mktemp -d)"
+chmod 0777 "$update_volume_dir"
+
+readonly PLAIN_CONTAINER="$CONTAINER-plain"
+
+# Arguments after the image replace bridge-control. The entrypoint still
+# prepares the volume and the keychain, so this is a bridge with everything it
+# needs and nobody configuring it.
+"$ENGINE" run -d \
+    --name "$PLAIN_CONTAINER" \
+    -v "$update_volume_dir:/data:Z" \
+    "$IMAGE" bridge --grpc >/dev/null
+
+sleep "$STARTUP_SECONDS"
+
+plain_info="$("$ENGINE" exec "$PLAIN_CONTAINER" proton-info 2>&1 || true)"
+
+if printf '%s' "$plain_info" | grep -q 'Bridge self-update     ON'; then
+    ok "without bridge-control the bridge default is on, so this check measures something"
+else
+    fail "an unconfigured bridge does not report automatic updates as on; the check below no longer proves anything: $(printf '%s' "$plain_info" | grep -i 'self-update' || echo 'no such line')"
+fi
+
+"$ENGINE" rm -f "$PLAIN_CONTAINER" >/dev/null 2>&1 || true
+
+readonly CONFIGURED_CONTAINER="$CONTAINER-configured"
+
+"$ENGINE" run -d \
+    --name "$CONFIGURED_CONTAINER" \
+    -v "$update_volume_dir:/data:Z" \
+    "$IMAGE" >/dev/null
+
+sleep "$STARTUP_SECONDS"
+
+configured_info="$("$ENGINE" exec "$CONFIGURED_CONTAINER" proton-info 2>&1 || true)"
+
+if printf '%s' "$configured_info" | grep -q 'Bridge self-update     off'; then
+    ok "bridge-control turned it off on the same vault"
+else
+    fail "automatic updates are still on after bridge-control ran: $(printf '%s' "$configured_info" | grep -i 'self-update' || echo 'no such line')"
+fi
+
+"$ENGINE" rm -f "$CONFIGURED_CONTAINER" >/dev/null 2>&1 || true
 
 # --------------------------------------------------------------------------
 # A configured port actually takes effect

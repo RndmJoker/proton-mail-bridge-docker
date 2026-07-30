@@ -102,6 +102,15 @@ main() {
     setup_gpg_key
     setup_pass_store
 
+    # Arguments replace bridge-control, after the volume and the keychain are
+    # ready either way. The usual Docker convention, and it is what makes the
+    # bridge reachable on its own for a shell, for `bridge --version`, and for
+    # the smoke test, which needs an unconfigured bridge to compare against.
+    if [ "$#" -gt 0 ]; then
+        log "Running: $*"
+        exec "$@"
+    fi
+
     log "Handing over to bridge-control."
 
     # exec rather than a background process: bridge-control is what has to

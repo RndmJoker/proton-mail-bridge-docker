@@ -64,6 +64,31 @@ func TestFormatNamesTheConnectionMode(t *testing.T) {
 	}
 }
 
+// The state has to be visible either way, and the wrong one has to be
+// recognisable as wrong. Printing "off" unconditionally would make the line
+// decoration rather than information.
+func TestFormatShowsTheUpdateSetting(t *testing.T) {
+	report := exampleReport()
+
+	out := Format(report)
+
+	if !strings.Contains(out, "Bridge self-update     off") {
+		t.Errorf("the setting is not shown:\n%s", out)
+	}
+
+	report.AutomaticUpdates = true
+
+	out = Format(report)
+
+	if !strings.Contains(out, "Bridge self-update     ON") {
+		t.Errorf("an enabled updater is not shown:\n%s", out)
+	}
+
+	if !strings.Contains(out, "not how this container is meant to run") {
+		t.Errorf("an enabled updater is shown without saying it is wrong:\n%s", out)
+	}
+}
+
 // An unreachable mail port is a real situation: the bridge may still be
 // starting. The rest of the report is worth showing, and the missing part has
 // to say why rather than appear as an empty line.

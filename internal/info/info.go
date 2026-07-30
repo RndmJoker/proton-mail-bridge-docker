@@ -40,6 +40,12 @@ type Report struct {
 	// FingerprintErr explains an empty Fingerprint.
 	FingerprintErr string
 
+	// AutomaticUpdates is the bridge's own updater, read from the bridge
+	// rather than assumed. bridge-control turns it off at startup; if this
+	// ever says otherwise, the image has stopped being a record of what is
+	// actually running.
+	AutomaticUpdates bool
+
 	Accounts []Account
 }
 
@@ -75,6 +81,20 @@ func Format(report Report) string {
 	b.WriteString("\n  The certificate is self-signed and generated on this machine, so every\n")
 	b.WriteString("  mail client will ask about it once. Compare what it shows against the\n")
 	b.WriteString("  fingerprint above before accepting it.\n")
+
+	b.WriteString("\nUpdates\n")
+
+	if report.AutomaticUpdates {
+		b.WriteString("  Bridge self-update     ON\n")
+		b.WriteString("\n  This is not how this container is meant to run. A bridge that replaces\n")
+		b.WriteString("  its own binary makes the image worthless as a record of what is running,\n")
+		b.WriteString("  and the launcher that would carry out the update is not in the image, so\n")
+		b.WriteString("  it downloads what it can never apply. Pull a new image instead.\n")
+	} else {
+		b.WriteString("  Bridge self-update     off\n")
+		b.WriteString("\n  A new image is the only way to update. The bridge will not replace its\n")
+		b.WriteString("  own binary.\n")
+	}
 
 	b.WriteString("\nAccounts\n")
 
