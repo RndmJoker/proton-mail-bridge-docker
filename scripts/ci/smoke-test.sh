@@ -247,6 +247,45 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# The vault key survives a restart
+# --------------------------------------------------------------------------
+
+# Everything above starts from an empty volume, which proves the vault key gets
+# written to the keychain but not that it can be read back. If it could not,
+# the bridge would generate a fresh one on every start and silently drop every
+# signed-in account, while all of the checks above stayed green.
+#
+# Kept last on purpose: it stops and starts the container, so anything running
+# after it would be looking at a different process.
+
+log "Vault key after a restart"
+
+"$ENGINE" stop -t 10 "$CONTAINER" >/dev/null 2>&1 || true
+"$ENGINE" start "$CONTAINER" >/dev/null 2>&1 || true
+sleep "$STARTUP_SECONDS"
+
+if [ "$("$ENGINE" inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" = "true" ]; then
+    ok "still running after a restart"
+else
+    fail "did not come back up after a restart"
+fi
+
+# The log line belongs to the bridge, not to us, so a rewording upstream would
+# make this check meaningless. Hence the exact count rather than a plain
+# "is it absent": one occurrence is the first start and is expected, none at
+# all means the line no longer says what we think it says.
+restart_logs="$("$ENGINE" logs "$CONTAINER" 2>&1)"
+generated="$(printf '%s\n' "$restart_logs" | grep -c 'no vault key found, generating new' || true)"
+
+if [ "$generated" -eq 1 ]; then
+    ok "the vault key was read back from pass, not regenerated"
+elif [ "$generated" -gt 1 ]; then
+    fail "a new vault key was generated on restart ($generated in total), so any signed-in account would be lost"
+else
+    fail "the first start did not log a key generation at all, so this check no longer measures anything"
+fi
+
+# --------------------------------------------------------------------------
 
 printf '\n'
 if [ "$failures" -eq 0 ]; then
