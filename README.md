@@ -51,6 +51,16 @@ These come from the bridge itself or from running inside a container. They will 
 
 This image is the companion to proton-mcp, an MCP server that speaks IMAP and SMTP to a running bridge. Map the container ports to `127.0.0.1` on the host and proton-mcp connects to them the way it would to a bridge on a desktop.
 
+## Releases
+
+Every version that reaches `main` gets an annotated, signed tag. Verify one before you trust a build:
+
+```bash
+git verify-tag v0.1.0
+```
+
+Tags are created locally rather than by CI, because the GitHub API can create tags but cannot sign them. A repository rule rejects any tag without a valid signature.
+
 ## Licence
 
 GNU General Public License v3.0, see [LICENSE](LICENSE).

@@ -86,32 +86,3 @@ jobs:
         run: |
           wget -qO- https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz | tar xz
           ./gitleaks detect --source . --verbose --no-banner
-
-  tag:
-    name: Tag release
-    needs: [shell, dockerfile, go, secrets]
-    if: github.event_name == 'push' && github.ref_name == 'main'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      # The project version lives in the VERSION file. Every version that
-      # reaches main gets a tag, so an image can always be traced back.
-      - name: Create tag from VERSION
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          version=$(tr -d '[:space:]' < VERSION)
-          tag="v${version}"
-
-          if gh api "repos/${{ github.repository }}/git/ref/tags/${tag}" >/dev/null 2>&1; then
-            echo "Tag ${tag} already exists, nothing to do."
-            exit 0
-          fi
-
-          echo "Creating tag ${tag} on ${{ github.sha }}"
-          gh api "repos/${{ github.repository }}/git/refs" \
-            -f ref="refs/tags/${tag}" \
-            -f sha="${{ github.sha }}"
