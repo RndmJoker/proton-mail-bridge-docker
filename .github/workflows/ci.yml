@@ -75,11 +75,35 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # The gRPC client is generated rather than committed, so nothing here
+      # compiles until this has run. See proto/README.md for why.
+      - name: Generate the gRPC client
+        if: steps.mod.outputs.present == 'true'
+        run: bash scripts/generate-proto.sh
+
       - name: Vet and test
         if: steps.mod.outputs.present == 'true'
         run: |
           go vet ./...
           go test ./...
+
+  proto:
+    name: Interface definition
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # proto/bridge.proto is Proton's file, copied unchanged. Raising
+      # BRIDGE_COMMIT without looking at it would otherwise be silent: the
+      # image would build, the smoke test would pass, and a renamed field
+      # would only show up as a call that quietly does nothing.
+      - name: Compare against upstream
+        run: |
+          if [ ! -f proto/bridge.proto ]; then
+            echo "No interface definition yet, nothing to compare."
+            exit 0
+          fi
+          bash scripts/ci/check-proto.sh
 
   image:
     name: Container image

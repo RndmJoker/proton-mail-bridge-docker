@@ -1,9 +1,9 @@
 # Proton Mail Bridge, built from the official source and run without a GUI.
 #
-# Two stages. The first one needs a Go toolchain, a C compiler and a handful of
-# development headers; none of that has any business being in the image that
-# ends up on a server, so the second stage starts from a bare Debian and copies
-# in one binary.
+# Three stages. The first two need a Go toolchain, and the first one a C
+# compiler and a handful of development headers as well; none of that has any
+# business being in the image that ends up on a server, so the last stage
+# starts from a bare Debian and copies in the finished binaries.
 #
 # Both stages use the same Debian release on purpose. The bridge is linked
 # against libsecret, libfido2, libcbor and OpenSSL at build time, and those
@@ -72,7 +72,44 @@ RUN make build-nogui \
         BUILD_ENV=prod
 
 # ---------------------------------------------------------------------------
-# Stage 2: runtime
+# Stage 2: build this project's own binaries
+# ---------------------------------------------------------------------------
+FROM golang:1.26-bookworm AS control
+
+# unzip is for the protoc release archive, which is only published as a zip.
+# Everything else the generator needs is already in the Go image.
+#
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Dependencies before sources, so that editing a Go file does not throw away
+# the module download.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY proto/ proto/
+COPY scripts/generate-proto.sh scripts/
+COPY internal/ internal/
+COPY cmd/ cmd/
+
+# The gRPC client is generated here rather than committed. See proto/README.md.
+RUN bash scripts/generate-proto.sh
+
+# CGO_ENABLED=0 makes these static, so they carry no library dependency into
+# the runtime stage. Unlike the bridge itself they need nothing from libc that
+# would justify the link.
+#
+# -trimpath keeps the build machine's directory layout out of the binaries.
+# hadolint ignore=DL3059
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/bridge-control ./cmd/bridge-control \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/proton-info ./cmd/proton-info
+
+# ---------------------------------------------------------------------------
+# Stage 3: runtime
 # ---------------------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
 
@@ -103,20 +140,32 @@ RUN groupadd --gid 1000 bridge \
 # Everything the bridge writes is redirected into a single directory through
 # the XDG variables it honours, so one volume covers the vault, the keychain
 # and the GPG key that unlocks it.
+#
+# These have to be set on the image rather than in the entrypoint: `docker
+# exec` starts a process with the image's environment and nothing else, and
+# proton-info finds the running bridge through exactly these paths.
+#
+# The tuneable settings are deliberately absent. Their defaults live in
+# internal/config, where they are tested, and are documented in .env.example.
+# Repeating them here would be a second place to change them, and the two
+# would eventually disagree without anything noticing.
 ENV BRIDGE_HOME=/data \
     XDG_CONFIG_HOME=/data/config \
     XDG_DATA_HOME=/data/data \
     XDG_CACHE_HOME=/data/cache \
     GNUPGHOME=/data/gnupg \
-    PASSWORD_STORE_DIR=/data/password-store \
-    BRIDGE_IMAP_PORT=1143 \
-    BRIDGE_SMTP_PORT=1025 \
-    BRIDGE_LOG_LEVEL=info
+    PASSWORD_STORE_DIR=/data/password-store
 
 COPY --from=build /src/bridge /usr/local/bin/bridge
+COPY --from=control /out/bridge-control /usr/local/bin/bridge-control
+COPY --from=control /out/proton-info /usr/local/bin/proton-info
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
-RUN chmod 0755 /usr/local/bin/bridge /usr/local/bin/entrypoint.sh \
+RUN chmod 0755 \
+        /usr/local/bin/bridge \
+        /usr/local/bin/bridge-control \
+        /usr/local/bin/proton-info \
+        /usr/local/bin/entrypoint.sh \
     && install -d -o bridge -g bridge -m 0700 /data
 
 USER bridge

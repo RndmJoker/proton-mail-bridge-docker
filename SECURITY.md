@@ -41,6 +41,11 @@ These are documented properties, not vulnerabilities:
 - **The setup page accepts the Proton password.** It runs over TLS with a
   self-signed certificate, is bound locally by default, and shuts down once an
   account is signed in.
+- **`proton-info` prints the bridge password in clear text.** That is what it is
+  for: it is the only way to see it without the graphical window. It runs on
+  request only, never at startup, and writes nothing to a log. Anyone who can
+  run it inside the container can already read the volume, and the volume holds
+  more than the password.
 
 A report that one of these exists is not a finding. A report that one of them
 can be reached in a way the documentation does not describe very much is.

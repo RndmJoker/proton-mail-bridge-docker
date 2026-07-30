@@ -1,0 +1,31 @@
+# The build context is copied into the image build, so anything here that is
+# not needed for the build is transfer time at best and a leak at worst.
+
+# Working material. These are symlinks into a private repository next door;
+# they would arrive in the context as dangling links.
+/.agents
+/.claude
+/AGENTS.md
+/CLAUDE.md
+
+# History. The bridge source is fetched inside the build with its own clone;
+# this repository's history is not needed for anything.
+/.git
+/.github
+
+# Fetched by scripts/generate-proto.sh. The build fetches its own, for the
+# platform it is building on.
+/.tools
+
+# Generated inside the build.
+/internal/bridgepb
+
+# Local state and credentials. None of this should ever exist in a checkout,
+# and if it does it must not travel into an image.
+/data
+/volume
+.env
+*.pem
+*.key
+*.crt
+*.log

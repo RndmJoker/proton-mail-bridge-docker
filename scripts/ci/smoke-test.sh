@@ -37,6 +37,7 @@ fail() { printf '  FAIL  %s\n' "$*"; failures=$((failures + 1)); }
 
 cleanup() {
     "$ENGINE" rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    "$ENGINE" rm -f "$CONTAINER-alt" >/dev/null 2>&1 || true
 
     # The volume was written by uid 1000 inside the container. Under a rootless
     # engine that maps to a subordinate uid on the host, and mode 0700 then
@@ -114,6 +115,38 @@ if printf '%s' "$version_output" | grep -qF '+git'; then
 else
     ok "no +git suffix"
 fi
+
+# --------------------------------------------------------------------------
+# A configuration it cannot honour stops it
+# --------------------------------------------------------------------------
+
+# The counterpart to every check below: those show that a good configuration is
+# applied, this shows that a bad one is refused rather than quietly replaced by
+# a default. A container listening somewhere other than it was told to is the
+# failure nobody notices.
+#
+# No volume is mounted. /data exists in the image and is writable, so the
+# container gets far enough to reject the value, and everything it wrote is
+# thrown away with the container.
+
+log "Refusing a configuration it cannot honour"
+
+for invalid in "BRIDGE_IMAP_PORT=143" "BRIDGE_SMTP_PORT=not-a-number" "BRIDGE_LOG_LEVEL=verbose"; do
+    if output="$("$ENGINE" run --rm -e "$invalid" "$IMAGE" 2>&1)"; then
+        fail "$invalid was accepted, the container started anyway"
+        continue
+    fi
+
+    # An error nobody can act on is barely better than none, so the offending
+    # variable has to be named in the message.
+    name="${invalid%%=*}"
+
+    if printf '%s' "$output" | grep -q "ERROR: $name"; then
+        ok "$invalid is refused, and the message names $name"
+    else
+        fail "$invalid failed the container, but the message does not name $name: $(printf '%s' "$output" | tail -n 1)"
+    fi
+done
 
 # --------------------------------------------------------------------------
 # It starts with no account signed in
@@ -247,6 +280,65 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# bridge-control reached the bridge over gRPC
+# --------------------------------------------------------------------------
+
+# This is what separates a running bridge from a configured one. None of the
+# checks above would notice if the gRPC connection never came up: the bridge
+# would still start, still open its default ports, and still answer IMAP.
+
+log "gRPC control"
+
+if printf '%s\n' "$container_logs" | grep -q 'bridge-control  Connected to bridge'; then
+    ok "bridge-control connected over gRPC"
+else
+    fail "bridge-control never reported a connection, so nothing was configured"
+fi
+
+# Reaching this point at all is the proof that automatic updates were turned
+# off: bridge-control treats a failure of that call as fatal and exits, so a
+# container that is still running is one where the call succeeded. There is no
+# way to read the setting back from outside, which is why it is arranged this
+# way rather than checked here.
+if printf '%s\n' "$container_logs" | grep -q 'automatic updates off'; then
+    ok "settings were applied and automatic updates were turned off"
+else
+    fail "bridge-control never reported applying its settings"
+fi
+
+# --------------------------------------------------------------------------
+# proton-info answers
+# --------------------------------------------------------------------------
+
+log "proton-info"
+
+info_output="$("$ENGINE" exec "$CONTAINER" proton-info 2>&1 || true)"
+printf '%s\n' "$info_output" | sed 's/^/  | /'
+
+if printf '%s' "$info_output" | grep -qF "$BRIDGE_VERSION"; then
+    ok "reports the bridge version"
+else
+    fail "does not report the bridge version"
+fi
+
+# With an empty volume there is no account, and saying so plainly is the whole
+# point: an operator who sees an empty list needs to know it is expected here
+# and not a lost account.
+if printf '%s' "$info_output" | grep -q 'No account is signed in'; then
+    ok "says that no account is signed in"
+else
+    fail "does not explain the empty account list"
+fi
+
+# The fingerprint comes from a TLS handshake against the running IMAP port, so
+# this also proves the mail server is up and speaking STARTTLS.
+if printf '%s' "$info_output" | grep -qE 'Certificate \(SHA-256\)  [0-9A-F]{2}(:[0-9A-F]{2}){31}'; then
+    ok "shows a certificate fingerprint from the live mail port"
+else
+    fail "no usable certificate fingerprint"
+fi
+
+# --------------------------------------------------------------------------
 # The vault key survives a restart
 # --------------------------------------------------------------------------
 
@@ -283,6 +375,73 @@ elif [ "$generated" -gt 1 ]; then
     fail "a new vault key was generated on restart ($generated in total), so any signed-in account would be lost"
 else
     fail "the first start did not log a key generation at all, so this check no longer measures anything"
+fi
+
+# --------------------------------------------------------------------------
+# A configured port actually takes effect
+# --------------------------------------------------------------------------
+
+# The strongest check here, and the reason the gRPC work exists at all. The
+# bridge opens 1143 by itself; every check above would pass just as well if
+# BRIDGE_IMAP_PORT were ignored entirely. Asking for a different port and
+# getting an answer there is the only proof that the setting travels all the
+# way through: environment, gRPC call, bridge, forward.
+#
+# It reuses the volume, so it also covers the case that matters in practice:
+# changing a port on a container that already has a vault.
+
+log "IMAP on a configured port"
+
+"$ENGINE" stop -t 10 "$CONTAINER" >/dev/null 2>&1 || true
+
+readonly ALT_IMAP_PORT=2143
+readonly ALT_CONTAINER="$CONTAINER-alt"
+
+"$ENGINE" run -d \
+    --name "$ALT_CONTAINER" \
+    -v "$volume_dir:/data:Z" \
+    -e "BRIDGE_IMAP_PORT=$ALT_IMAP_PORT" \
+    -p "127.0.0.1::$ALT_IMAP_PORT" \
+    "$IMAGE" >/dev/null
+
+sleep "$STARTUP_SECONDS"
+
+alt_logs="$("$ENGINE" logs "$ALT_CONTAINER" 2>&1)"
+printf '%s\n' "$alt_logs" | tail -n 20 | sed 's/^/  | /'
+
+alt_host_port="$("$ENGINE" port "$ALT_CONTAINER" "$ALT_IMAP_PORT/tcp" 2>/dev/null | head -n1 | sed 's/.*://')"
+
+if [ -z "$alt_host_port" ]; then
+    fail "no host port is mapped to container port $ALT_IMAP_PORT"
+else
+    alt_greeting=""
+    if exec 3<>"/dev/tcp/127.0.0.1/$alt_host_port" 2>/dev/null; then
+        IFS= read -r -t 10 alt_greeting <&3 || true
+        exec 3<&-
+    fi
+
+    alt_greeting="${alt_greeting%$'\r'}"
+
+    case "$alt_greeting" in
+        '* OK'*) ok "IMAP answered on the configured port $ALT_IMAP_PORT: $alt_greeting" ;;
+        '')      fail "connected to the mapping for $ALT_IMAP_PORT but got no greeting" ;;
+        *)       fail "unexpected greeting on port $ALT_IMAP_PORT: $alt_greeting" ;;
+    esac
+fi
+
+# The counter-check to the one above: the default port must be gone. If the
+# bridge had ignored the setting and stayed on 1143, the test above could still
+# pass through a forward that happens to exist.
+if printf '%s\n' "$alt_logs" | grep -q "Forwarding IMAP: .*:$ALT_IMAP_PORT"; then
+    ok "the forward followed the bridge to port $ALT_IMAP_PORT"
+else
+    fail "no forward was set up for port $ALT_IMAP_PORT"
+fi
+
+if printf '%s\n' "$alt_logs" | grep -q 'Forwarding IMAP: .*:1143'; then
+    fail "IMAP is still being forwarded on 1143, so the configured port was not applied"
+else
+    ok "nothing is left listening on the default IMAP port"
 fi
 
 # --------------------------------------------------------------------------
