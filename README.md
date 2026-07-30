@@ -11,12 +11,12 @@ Early development. This section always states what actually works, not what is p
 | Stage | State |
 | :--- | :--- |
 | Project skeleton and CI | done |
-| Image with a running bridge core | planned |
+| Image with a running bridge core | done |
 | `bridge-control`: gRPC control, environment variables | planned |
 | Setup web page and `proton-login` | planned |
 | Workflow that rebuilds on every new bridge release | planned |
 
-Nothing here is usable yet. Do not point a mail client at it.
+The image builds and the bridge starts, but **there is still no way to sign in**, so no mail passes through it yet. Do not point a mail client at it.
 
 ## How it is meant to work
 
@@ -37,6 +37,58 @@ Keep it on encrypted storage. Keep it out of backups other people can read. Keep
 **Never expose IMAP or SMTP to the open internet.** The example configuration binds them to `127.0.0.1` on the host. Reach them from another machine through a tunnel or a VPN, not through an open port.
 
 Running the bridge on a server means decrypted mail lives on that server. That is the trade you are making. Make it knowingly.
+
+## Building and running it
+
+There is no published image yet. Build it from this repository:
+
+```bash
+source docker/bridge-version
+docker build \
+  --build-arg "BRIDGE_COMMIT=$BRIDGE_COMMIT" \
+  --build-arg "BRIDGE_VERSION=$BRIDGE_VERSION" \
+  -f docker/Dockerfile -t proton-mail-bridge:local .
+```
+
+The build fetches the bridge source from Proton at the commit recorded in [`docker/bridge-version`](docker/bridge-version) and compiles it with `make build-nogui`. It takes a few minutes; nothing is downloaded prebuilt.
+
+Then start it:
+
+```bash
+docker run -d --name proton-bridge \
+  -v proton-bridge-data:/data \
+  -p 127.0.0.1:1143:1143 \
+  -p 127.0.0.1:1025:1025 \
+  proton-mail-bridge:local
+```
+
+At this point the bridge is running with no account, so IMAP answers but has nothing to serve. Signing in comes with the next release.
+
+**Bind mounts need two things a named volume gives you for free.** The container runs as uid 1000 and never as root, so it cannot fix ownership itself:
+
+```bash
+chown -R 1000:1000 /your/path          # any host
+docker run -v /your/path:/data:Z ...   # SELinux hosts, Fedora and RHEL among them
+```
+
+Without the `:Z` the container is denied access on an enforcing system, and the entrypoint stops with an explanation rather than failing somewhere deeper.
+
+### Environment variables
+
+| Variable | Default | Meaning |
+| :--- | :--- | :--- |
+| `BRIDGE_LOG_LEVEL` | `info` | One of `panic`, `fatal`, `error`, `warn`, `info`, `debug` |
+| `BRIDGE_IMAP_PORT` | `1143` | Port forwarded to the bridge's IMAP listener |
+| `BRIDGE_SMTP_PORT` | `1025` | Port forwarded to the bridge's SMTP listener |
+| `BRIDGE_FORWARD_TIMEOUT` | `60` | Seconds to wait for those ports before giving up on forwarding them |
+
+Your Proton credentials are not in that table and never will be. See [Security](#security-before-anything-else).
+
+### Why socat is in there
+
+The bridge binds IMAP and SMTP on `127.0.0.1` only. Inside a container that means nothing outside can reach them, no matter how the ports are published. `socat` listens on the container's own address and forwards to the loopback one, so the bridge still sees a local connection and the port number stays the same on both sides.
+
+The entrypoint starts it only after the bridge is listening. The other way round, the bridge would find its port taken and quietly move to the next one.
 
 ## Limitations
 
