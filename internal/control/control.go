@@ -5,6 +5,7 @@ package control
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/bridgepb"
@@ -40,19 +41,47 @@ func Apply(ctx context.Context, client bridgepb.BridgeClient, cfg config.Config)
 	return setMailServerSettings(ctx, client, cfg)
 }
 
-// disableAutomaticUpdates turns off the bridge's own updater.
+// disableAutomaticUpdates turns off the bridge's own updater and reads the
+// setting back.
 //
 // A new image is the only intended way to update this container. A bridge that
 // replaces its own binary makes the image worthless as a record of what is
 // running, and the launcher that would carry out such an update is not even
 // in the image. Leaving the setting on would mean it downloads updates it can
 // never apply.
+//
+// The read-back is the point. Sending the call and assuming it worked would
+// make a running container proof of nothing: the setting lives in the vault,
+// and a write that failed silently would leave the updater on for the whole
+// life of the container with the log claiming otherwise.
 func disableAutomaticUpdates(ctx context.Context, client bridgepb.BridgeClient) error {
 	if _, err := client.SetIsAutomaticUpdateOn(ctx, wrapperspb.Bool(false)); err != nil {
 		return fmt.Errorf("could not turn off automatic updates: %w", err)
 	}
 
+	state, err := client.IsAutomaticUpdateOn(ctx, &emptypb.Empty{})
+	if err != nil {
+		return fmt.Errorf("could not read back the automatic update setting: %w", err)
+	}
+
+	if state.GetValue() {
+		return errors.New("automatic updates are still on after being turned off; the bridge would replace its own binary")
+	}
+
 	return nil
+}
+
+// AutomaticUpdatesOn reports the current setting.
+//
+// Read from the bridge rather than remembered from the call above, so that it
+// still says the truth after a restart, when nothing in this process set it.
+func AutomaticUpdatesOn(ctx context.Context, client bridgepb.BridgeClient) (bool, error) {
+	state, err := client.IsAutomaticUpdateOn(ctx, &emptypb.Empty{})
+	if err != nil {
+		return false, fmt.Errorf("could not read the automatic update setting: %w", err)
+	}
+
+	return state.GetValue(), nil
 }
 
 // setMailServerSettings applies the ports and the TLS mode.

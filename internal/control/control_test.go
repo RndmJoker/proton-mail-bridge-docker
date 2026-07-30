@@ -18,12 +18,28 @@ import (
 type stubClient struct {
 	bridgepb.BridgeClient
 
-	automaticUpdate    *bool
+	// Starts on, which is the bridge's own default for a fresh vault
+	// (internal/vault/types_settings.go). Anything else would let a test pass
+	// that only ever looks at a value nobody changed.
+	automaticUpdate bool
+
+	// setWasCalled separates "never asked" from "asked and it had no effect".
+	setWasCalled bool
+
+	// swallowSet makes the setter report success without changing anything,
+	// which is what a silently failed vault write looks like from here.
+	swallowSet bool
+
 	mailServerSettings *bridgepb.ImapSmtpSettings
 
-	updateErr   error
-	settingsErr error
-	versionErr  error
+	updateErr    error
+	updateGetErr error
+	settingsErr  error
+	versionErr   error
+}
+
+func newStub() *stubClient {
+	return &stubClient{automaticUpdate: true}
 }
 
 func (s *stubClient) SetIsAutomaticUpdateOn(_ context.Context, in *wrapperspb.BoolValue, _ ...grpc.CallOption) (*emptypb.Empty, error) {
@@ -31,10 +47,21 @@ func (s *stubClient) SetIsAutomaticUpdateOn(_ context.Context, in *wrapperspb.Bo
 		return nil, s.updateErr
 	}
 
-	value := in.GetValue()
-	s.automaticUpdate = &value
+	s.setWasCalled = true
+
+	if !s.swallowSet {
+		s.automaticUpdate = in.GetValue()
+	}
 
 	return &emptypb.Empty{}, nil
+}
+
+func (s *stubClient) IsAutomaticUpdateOn(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*wrapperspb.BoolValue, error) {
+	if s.updateGetErr != nil {
+		return nil, s.updateGetErr
+	}
+
+	return wrapperspb.Bool(s.automaticUpdate), nil
 }
 
 func (s *stubClient) SetMailServerSettings(_ context.Context, in *bridgepb.ImapSmtpSettings, _ ...grpc.CallOption) (*emptypb.Empty, error) {
@@ -82,7 +109,7 @@ func TestBridgeArgs(t *testing.T) {
 }
 
 func TestApply(t *testing.T) {
-	client := &stubClient{}
+	client := newStub()
 
 	cfg := config.Config{IMAPPort: 2143, SMTPPort: 2025, IMAPSSL: true, SMTPSSL: false}
 
@@ -90,12 +117,12 @@ func TestApply(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if client.automaticUpdate == nil {
+	if !client.setWasCalled {
 		t.Fatal("automatic updates were never touched")
 	}
 
-	if *client.automaticUpdate {
-		t.Fatal("automatic updates were turned on, not off")
+	if client.automaticUpdate {
+		t.Fatal("automatic updates are still on")
 	}
 
 	settings := client.mailServerSettings
@@ -116,7 +143,8 @@ func TestApply(t *testing.T) {
 // than it was told to. That has to surface as a failure, not as a log line
 // nobody reads.
 func TestApplyFailsWhenSettingsAreRejected(t *testing.T) {
-	client := &stubClient{settingsErr: errors.New("rejected")}
+	client := newStub()
+	client.settingsErr = errors.New("rejected")
 
 	err := Apply(context.Background(), client, config.Config{IMAPPort: 1143, SMTPPort: 1025})
 	if err == nil {
@@ -124,8 +152,62 @@ func TestApplyFailsWhenSettingsAreRejected(t *testing.T) {
 	}
 }
 
+// The call reports success but the setting does not move. Without reading it
+// back this passes, the container runs, and the log says automatic updates are
+// off while the bridge is free to replace its own binary.
+func TestApplyFailsWhenTheSettingDoesNotStick(t *testing.T) {
+	client := newStub()
+	client.swallowSet = true
+
+	err := Apply(context.Background(), client, config.Config{IMAPPort: 1143, SMTPPort: 1025})
+	if err == nil {
+		t.Fatal("expected an error, got none")
+	}
+
+	if client.mailServerSettings != nil {
+		t.Fatal("the settings were applied although the updater is still on")
+	}
+}
+
+func TestApplyFailsWhenTheSettingCannotBeReadBack(t *testing.T) {
+	client := newStub()
+	client.updateGetErr = errors.New("unavailable")
+
+	if err := Apply(context.Background(), client, config.Config{IMAPPort: 1143, SMTPPort: 1025}); err == nil {
+		t.Fatal("expected an error, got none")
+	}
+}
+
+func TestAutomaticUpdatesOn(t *testing.T) {
+	client := newStub()
+
+	on, err := AutomaticUpdatesOn(context.Background(), client)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The stub starts where a fresh vault does. If this ever reads false
+	// without anything having turned it off, the check below stops measuring.
+	if !on {
+		t.Fatal("expected the bridge default to be on")
+	}
+
+	if err := Apply(context.Background(), client, config.Config{IMAPPort: 1143, SMTPPort: 1025}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if on, err = AutomaticUpdatesOn(context.Background(), client); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if on {
+		t.Fatal("still on after Apply")
+	}
+}
+
 func TestApplyFailsWhenUpdatesCannotBeDisabled(t *testing.T) {
-	client := &stubClient{updateErr: errors.New("rejected")}
+	client := newStub()
+	client.updateErr = errors.New("rejected")
 
 	err := Apply(context.Background(), client, config.Config{IMAPPort: 1143, SMTPPort: 1025})
 	if err == nil {
@@ -141,7 +223,7 @@ func TestApplyFailsWhenUpdatesCannotBeDisabled(t *testing.T) {
 }
 
 func TestVersion(t *testing.T) {
-	version, err := Version(context.Background(), &stubClient{})
+	version, err := Version(context.Background(), newStub())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
