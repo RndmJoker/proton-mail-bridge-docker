@@ -1,0 +1,72 @@
+name: Bug report
+description: Something is not working
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **Never paste credentials.** Not your Proton password, not the bridge
+        password, not a TOTP code, not the contents of the volume. Logs can
+        contain them too, so read what you paste before you paste it.
+
+        Found a security problem? Do not open a public issue. See
+        [the security policy](https://github.com/RndmJoker/proton-mail-bridge-docker/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, in one or two sentences.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered, starting from a fresh container where possible.
+      placeholder: |
+        1. Start the container with ...
+        2. Open the setup page
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include log output if you have it, with any credentials removed.
+    validations:
+      required: true
+
+  - type: input
+    id: image-version
+    attributes:
+      label: Image version
+      description: The tag you are running, or the commit if you built it yourself.
+      placeholder: "0.1.0"
+
+  - type: input
+    id: bridge-version
+    attributes:
+      label: Bridge version
+      description: Shown by proton-info, for example 3.25.0.
+
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Before submitting
+      options:
+        - label: This report contains no passwords, tokens or private mail content.
+          required: true

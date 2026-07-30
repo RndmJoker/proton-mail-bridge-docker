@@ -1,0 +1,25 @@
+name: Feature request
+description: Ask for something that does not exist yet
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Some limits come from the bridge itself and cannot be lifted here.
+        Passkeys, ARM builds and anything Proton does not expose over IMAP or
+        SMTP are listed in the readme under Limitations.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What should the container be able to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Rationale
+      description: What problem would it solve, and how do you work around it today?
