@@ -39,8 +39,18 @@ These are documented properties, not vulnerabilities:
   without TLS or with a self-signed certificate, guarded only by the bridge
   password. The readme says to keep them on localhost or behind a tunnel.
 - **The setup page accepts the Proton password.** It runs over TLS with a
-  self-signed certificate, is bound locally by default, and shuts down once an
-  account is signed in.
+  self-signed certificate, is bound inside the container by default, and shuts
+  down once an account is signed in. Reaching it from a browser takes an
+  explicit `BRIDGE_SETUP_EXPOSE=true`, and then it demands an access token as
+  well.
+- **The access token is stored in the volume**, at mode 0600, and is the only
+  way to read it. It is deliberately not printed to the container log: logs get
+  attached to bug reports and shipped to whatever collects them on the host.
+  Anyone who can already read the volume can read the token, and the volume
+  holds far more than that.
+- **A security key alone cannot sign in.** The bridge offers FIDO2, but it
+  needs hardware attached to the machine. TOTP works. This is a refusal with an
+  explanation, not a hang.
 - **`proton-info` prints the bridge password in clear text.** That is what it is
   for: it is the only way to see it without the graphical window. It runs on
   request only, never at startup, and writes nothing to a log. Anyone who can

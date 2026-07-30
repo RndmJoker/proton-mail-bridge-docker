@@ -106,7 +106,8 @@ RUN bash scripts/generate-proto.sh
 # -trimpath keeps the build machine's directory layout out of the binaries.
 # hadolint ignore=DL3059
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/bridge-control ./cmd/bridge-control \
-    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/proton-info ./cmd/proton-info
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/proton-info ./cmd/proton-info \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/proton-login ./cmd/proton-login
 
 # ---------------------------------------------------------------------------
 # Stage 3: runtime
@@ -159,12 +160,14 @@ ENV BRIDGE_HOME=/data \
 COPY --from=build /src/bridge /usr/local/bin/bridge
 COPY --from=control /out/bridge-control /usr/local/bin/bridge-control
 COPY --from=control /out/proton-info /usr/local/bin/proton-info
+COPY --from=control /out/proton-login /usr/local/bin/proton-login
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 RUN chmod 0755 \
         /usr/local/bin/bridge \
         /usr/local/bin/bridge-control \
         /usr/local/bin/proton-info \
+        /usr/local/bin/proton-login \
         /usr/local/bin/entrypoint.sh \
     && install -d -o bridge -g bridge -m 0700 /data
 
@@ -173,8 +176,11 @@ WORKDIR /home/bridge
 
 VOLUME ["/data"]
 
-# IMAP and SMTP. These are what socat exposes, not what the bridge binds.
-EXPOSE 1143 1025
+# IMAP and SMTP, and the sign-in page. The mail ports are what socat exposes,
+# not what the bridge binds. The sign-in page is only reachable from outside
+# when BRIDGE_SETUP_EXPOSE is set; it is listed because publishing the port is
+# pointless otherwise, not because it is open by default.
+EXPOSE 1143 1025 8443
 
 # tini in process-group mode: the entrypoint runs the bridge and socat side by
 # side, and a plain shell as PID 1 would neither forward SIGTERM to them nor

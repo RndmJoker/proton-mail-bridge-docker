@@ -21,6 +21,7 @@ const (
 	DefaultLogLevel       = "info"
 	DefaultForwardTimeout = 60 * time.Second
 	DefaultStartTimeout   = 120 * time.Second
+	DefaultSetupPort      = 8443
 )
 
 // Config is everything bridge-control reads from the environment.
@@ -48,6 +49,16 @@ type Config struct {
 	// up. Generous on purpose: the first start of a fresh volume generates a
 	// GPG key and unlocks a new vault.
 	StartTimeout time.Duration
+
+	// SetupPort is where the sign-in page listens.
+	SetupPort int
+
+	// SetupExpose opens the sign-in page beyond the container.
+	//
+	// Off by default, and the page that takes a Proton password is not
+	// something to open by accident. With it on, the page demands an access
+	// token that is generated at startup and printed to the log.
+	SetupExpose bool
 }
 
 // validLogLevels are the ones the bridge accepts. Anything else makes it exit
@@ -81,10 +92,6 @@ func FromEnv() (Config, error) {
 		return Config{}, err
 	}
 
-	if config.IMAPPort == config.SMTPPort {
-		return Config{}, fmt.Errorf("BRIDGE_IMAP_PORT and BRIDGE_SMTP_PORT are both %d, they have to differ", config.IMAPPort)
-	}
-
 	if config.IMAPSSL, err = boolean("BRIDGE_IMAP_SSL", false); err != nil {
 		return Config{}, err
 	}
@@ -103,6 +110,29 @@ func FromEnv() (Config, error) {
 
 	if config.StartTimeout, err = seconds("BRIDGE_START_TIMEOUT", DefaultStartTimeout); err != nil {
 		return Config{}, err
+	}
+
+	if config.SetupPort, err = port("BRIDGE_SETUP_PORT", DefaultSetupPort); err != nil {
+		return Config{}, err
+	}
+
+	if config.SetupExpose, err = boolean("BRIDGE_SETUP_EXPOSE", false); err != nil {
+		return Config{}, err
+	}
+
+	// All three end up as listening sockets in the same container. Two on one
+	// number means one of them silently loses.
+	for _, clash := range []struct {
+		a, b         int
+		nameA, nameB string
+	}{
+		{config.IMAPPort, config.SMTPPort, "BRIDGE_IMAP_PORT", "BRIDGE_SMTP_PORT"},
+		{config.IMAPPort, config.SetupPort, "BRIDGE_IMAP_PORT", "BRIDGE_SETUP_PORT"},
+		{config.SMTPPort, config.SetupPort, "BRIDGE_SMTP_PORT", "BRIDGE_SETUP_PORT"},
+	} {
+		if clash.a == clash.b {
+			return Config{}, fmt.Errorf("%s and %s are both %d, they have to differ", clash.nameA, clash.nameB, clash.a)
+		}
 	}
 
 	return config, nil

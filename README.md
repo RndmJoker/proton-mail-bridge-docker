@@ -13,10 +13,10 @@ Early development. This section always states what actually works, not what is p
 | Project skeleton and CI | done |
 | Image with a running bridge core | done |
 | `bridge-control`: gRPC control, environment variables | done |
-| Setup web page and `proton-login` | planned |
+| Setup web page and `proton-login` | done |
 | Workflow that rebuilds on every new bridge release | planned |
 
-The image builds and the bridge starts, but **there is still no way to sign in**, so no mail passes through it yet. Do not point a mail client at it.
+The image builds, the bridge starts, and an account can be signed in. **No test in this repository uses a real Proton account**, so the sign-in itself is exercised by hand rather than by CI. Treat this as early software and keep a copy of anything you care about elsewhere.
 
 ## How it is meant to work
 
@@ -62,7 +62,35 @@ docker run -d --name proton-bridge \
   proton-mail-bridge:local
 ```
 
-At this point the bridge is running with no account, so IMAP answers but has nothing to serve. Signing in comes with the next release.
+Then sign in:
+
+```bash
+docker exec -it proton-bridge proton-login
+```
+
+It asks for your Proton username and password, then for whatever Proton asks for next: a two-factor code, a separate mailbox password, or a link to open for human verification. Nothing you type is echoed, logged or stored.
+
+Afterwards, `docker exec proton-bridge proton-info` shows the bridge password your mail client needs.
+
+### Signing in through a browser instead
+
+The sign-in page runs whenever no account is signed in, and shuts down as soon as one is. By default it is bound inside the container, which means no browser can reach it: the same reason the mail ports need `socat`. That is deliberate, because the page accepts your Proton password.
+
+To open it anyway:
+
+```bash
+docker run -d --name proton-bridge \
+  -v proton-bridge-data:/data \
+  -e BRIDGE_SETUP_EXPOSE=true \
+  -p 127.0.0.1:8443:8443 \
+  proton-mail-bridge:local
+
+docker logs proton-bridge     # the access token and the certificate fingerprint
+```
+
+The log prints an access token, generated fresh at every start, which the page then demands. It also prints the fingerprint of the certificate, which is created once and kept in the volume so it stays the same across restarts. Compare it against what your browser shows before you type a password into that page.
+
+**Even with a token, this belongs behind a tunnel or a VPN.** It is a page that takes the password to your entire mailbox.
 
 ### What runs inside
 
@@ -103,6 +131,8 @@ Without the `:Z` the container is denied access on an enforcing system, and the 
 | `BRIDGE_SMTP_PORT` | `1025` | Port the bridge serves SMTP on, inside the container and outside |
 | `BRIDGE_IMAP_SSL` | `false` | Direct TLS instead of STARTTLS for IMAP |
 | `BRIDGE_SMTP_SSL` | `false` | Direct TLS instead of STARTTLS for SMTP |
+| `BRIDGE_SETUP_PORT` | `8443` | Port for the sign-in page |
+| `BRIDGE_SETUP_EXPOSE` | `false` | Make the sign-in page reachable from outside the container, with an access token |
 | `BRIDGE_START_TIMEOUT` | `120` | Seconds to wait for the bridge's gRPC service before giving up |
 | `BRIDGE_FORWARD_TIMEOUT` | `60` | Seconds to wait for a mail port before giving up on forwarding it |
 
