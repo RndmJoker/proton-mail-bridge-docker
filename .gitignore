@@ -1,10 +1,14 @@
 # Build artefacts
 /bridge-control
+/proton-info
 /dist/
 *.exe
 
-# Generated gRPC code
-/internal/protonapi/*.pb.go
+# Pinned tools fetched by scripts/generate-proto.sh
+/.tools/
+
+# Generated gRPC code. Deliberately not versioned, see proto/README.md.
+/internal/bridgepb/
 
 # Credentials and local configuration
 .env
