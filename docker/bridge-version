@@ -1,0 +1,23 @@
+# The upstream source this image is built from.
+#
+# Pinned to a commit hash, never to a tag. A tag is a movable label: whoever
+# controls the upstream repository can point it somewhere else after the fact,
+# and a build that only names the tag would silently follow. A hash cannot be
+# moved. The build fetches exactly this commit, so a tampered tag can only ever
+# cause a loud failure, never a quiet substitution.
+#
+# BRIDGE_TAG is recorded so the release workflow can check that the tag still
+# resolves to BRIDGE_COMMIT. If it does not, the tag was moved and the build
+# stops rather than shipping something nobody reviewed.
+#
+# Plain shell assignments, no expansion, no quotes: this file is read both by
+# `source` in scripts and by grep in CI.
+
+BRIDGE_TAG=v3.25.0
+BRIDGE_COMMIT=f1f599e97167265cb0d10ad3d169269c324d9cc7
+
+# Passed to the upstream Makefile as BRIDGE_APP_VERSION. Its default is
+# "3.25.0+git" and the default BUILD_ENV is "dev", which together make the
+# bridge announce itself to Proton as a development build. Both are therefore
+# always set explicitly, and the smoke test asserts the result.
+BRIDGE_VERSION=3.25.0
