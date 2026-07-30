@@ -73,6 +73,25 @@ jobs:
           go vet ./...
           go test ./...
 
+  image:
+    name: Container image
+    runs-on: ubuntu-latest
+    # Compiling the bridge from source is the slow part of this workflow.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # Building the image is also the only way to find out whether the pinned
+      # upstream commit still fetches, so this runs on every change, not only
+      # on changes under docker/.
+      - name: Build the image and run the smoke test
+        run: |
+          if [ ! -f docker/Dockerfile ]; then
+            echo "No Dockerfile yet, nothing to build."
+            exit 0
+          fi
+          bash scripts/ci/smoke-test.sh
+
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest
