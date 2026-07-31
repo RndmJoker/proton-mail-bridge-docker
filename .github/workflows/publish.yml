@@ -47,8 +47,30 @@ env:
   DOCKERHUB_USER: rndmjoker
 
 jobs:
+  # Whether anything may be pushed at all is a decision that lives in the
+  # repository, in the PUBLISH file, which carries the reasoning. Its own job
+  # rather than a step, so that a `no` shows the work below as **skipped**.
+  #
+  # That distinction is the point. A failing step would paint the run red every
+  # night for a state that is intended, and a red mark nobody reads is worse
+  # than none. A passing step would leave a green run that looks like it
+  # published something. Skipped is what actually happened.
+  gate:
+    name: May this publish
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the PUBLISH file
+        id: check
+        run: bash scripts/ci/check-publish-enabled.sh
+
   publish:
     name: Build, test and publish
+    needs: gate
+    if: needs.gate.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     # The image job in ci.yml allows 45 minutes for the build alone. This does
     # the same build, the same smoke test, and then two pushes.

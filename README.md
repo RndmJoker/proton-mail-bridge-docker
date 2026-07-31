@@ -251,7 +251,9 @@ git verify-tag v0.1.0
 
 Tags are created locally rather than by CI, because the GitHub API can create tags but cannot sign them. A repository rule rejects any tag without a valid signature.
 
-Pushing such a tag is also what publishes an image. Nothing reaches a registry that did not come through a pull request, pass the smoke test in the same run, and get its provenance signed. See [Where the images are](#where-the-images-are).
+Pushing such a tag is also what publishes an image, when publishing is on at all. Nothing reaches a registry that did not come through a pull request, pass the smoke test in the same run, and get its provenance signed. See [Where the images are](#where-the-images-are).
+
+**Whether anything may be published is decided in the [`PUBLISH`](PUBLISH) file**, not in a settings page. While it says `no` the publish job is skipped, so a tag records a version and nothing more. The file says why it is where it is.
 
 A new upstream bridge release does **not** publish anything by itself. A scheduled check notices it and files an issue; what Proton changed is looked at by a person before it goes out under this name.
 

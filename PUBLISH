@@ -1,0 +1,22 @@
+# Whether the publish workflow may push anything to a registry.
+#
+# This exists because a tag stopped being bookkeeping and became a release.
+# .github/workflows/publish.yml fires on a version tag and once a night, so
+# from the moment it reached main, tagging and doing nothing at all both
+# publish an image. That is fine when the thing is ready and wrong before it
+# is, and nothing in the repository said which of the two applied.
+#
+# A repository setting would have done the job too, and was in fact used for
+# one evening. What it cannot do is show up in a diff. Turning publishing on
+# should be a line somebody wrote and somebody else could have objected to,
+# not a switch in a settings page nobody looks at twice.
+#
+# When this is `no`, the publish job is skipped rather than failed. A failed
+# job every night would be a red mark nobody reads after the third time, and a
+# green one would claim something was published. Skipped is what actually
+# happened.
+#
+# Plain shell assignment, no expansion, no quotes: read by `source` in scripts
+# and by grep in CI, the same as docker/bridge-version.
+
+PUBLISH=no
