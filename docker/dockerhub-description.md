@@ -57,4 +57,4 @@ gh attestation verify oci://docker.io/rndmjoker/proton-mail-bridge-docker:edge \
 
 ## Licence
 
-MIT. The bridge itself is GPL-3.0 and is built from Proton's published source at a pinned commit.
+GNU General Public License v3.0. The bridge itself is not modified here; it is built from Proton's own source at a commit recorded in the repository, so anyone can reproduce the binary in this image.

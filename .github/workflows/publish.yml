@@ -59,6 +59,11 @@ jobs:
       # no secret to store for it. Docker Hub is a separate namespace and needs
       # one.
       packages: write
+      # Build provenance is signed keyless through Sigstore: the workflow's
+      # OIDC token is the identity, and the certificate it gets back lives for
+      # minutes. No private key is stored anywhere, which is the entire appeal.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -104,6 +109,34 @@ jobs:
         id: push
         run: bash scripts/ci/image-tags.sh | bash scripts/ci/push-image.sh
 
+      # What this records is that this image, at this digest, was built by this
+      # workflow in this repository at this commit. Whoever pulls it can check
+      # that without trusting a signing key that someone had to keep somewhere.
+      #
+      # Pinned to the major tag rather than a commit, unlike everything else in
+      # this repository's CI. A frozen version of a signing action rots against
+      # the Sigstore infrastructure it talks to, and there is nothing here to
+      # notice when it does.
+      #
+      # Filed twice, once per registry. The digest is the same for both, so one
+      # attestation would very likely cover both; verifying by name as well as
+      # by digest is worth one extra step rather than finding out it did not.
+      - name: Attest the image on ghcr.io
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/rndmjoker/proton-mail-bridge-docker
+          subject-digest: ${{ steps.push.outputs.digest }}
+          # Stores the attestation next to the image, so it can be found
+          # without asking GitHub. Only for ghcr: Docker Hub's support for OCI
+          # referrers is newer and this has no way to test it beforehand.
+          push-to-registry: true
+
+      - name: Attest the image on Docker Hub
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: docker.io/rndmjoker/proton-mail-bridge-docker
+          subject-digest: ${{ steps.push.outputs.digest }}
+
       # After the push, because the first push is what creates the repository
       # on Docker Hub and an empty repository cannot be described.
       - name: Update the Docker Hub description
@@ -118,3 +151,8 @@ jobs:
           bash scripts/ci/image-tags.sh >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "Digest: \`${{ steps.push.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Check where it came from:" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "gh attestation verify oci://ghcr.io/rndmjoker/proton-mail-bridge-docker@${{ steps.push.outputs.digest }} --repo ${{ github.repository }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
