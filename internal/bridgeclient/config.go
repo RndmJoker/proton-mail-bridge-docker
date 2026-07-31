@@ -91,6 +91,40 @@ func SettingsDir() (string, error) {
 	return filepath.Join(config, "protonmail", "bridge-v3"), nil
 }
 
+// VaultFileName is where the bridge keeps its accounts.
+const VaultFileName = "vault.enc"
+
+// VaultExists reports whether the bridge has ever written a vault here.
+//
+// Only meaningful before the bridge is started: it creates the file on its
+// first run whether or not anybody signs in, so afterwards this is true for
+// every container that has ever run.
+//
+// That timing is the whole use. A container starting for the first time cannot
+// have an account, so there is nothing to wait for and nobody should be made to
+// wait. Waiting for something that cannot exist is a delay, not caution.
+//
+// An error reads as "it might exist". Being wrong in that direction costs a
+// wait; being wrong in the other opens the sign-in page on a container that is
+// already signed in, which is the bug this serves to avoid.
+func VaultExists() (bool, error) {
+	dir, err := SettingsDir()
+	if err != nil {
+		return true, err
+	}
+
+	_, err = os.Stat(filepath.Join(dir, VaultFileName))
+
+	switch {
+	case err == nil:
+		return true, nil
+	case os.IsNotExist(err):
+		return false, nil
+	default:
+		return true, err
+	}
+}
+
 // ServerConfigPath returns the full path of the file the bridge writes.
 func ServerConfigPath() (string, error) {
 	dir, err := SettingsDir()

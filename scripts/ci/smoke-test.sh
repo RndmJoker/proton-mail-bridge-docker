@@ -29,11 +29,66 @@ readonly CONTAINER="proton-mail-bridge-smoke-$$"
 # vault before it can be judged to have started cleanly.
 readonly STARTUP_SECONDS="${STARTUP_SECONDS:-25}"
 
+# How long wait_ready gives a container. Generous on purpose: a container whose
+# volume already holds a vault waits for the bridge to read it before the
+# sign-in page can exist, and that wait is bounded by accountsReportedTimeout in
+# bridge-control, currently 30 seconds. This has to be comfortably more than
+# that plus the bridge's own startup, and costs nothing when things are quick.
+readonly READY_TIMEOUT="${READY_TIMEOUT:-90}"
+
 failures=0
 
 log()  { printf '\n=== %s\n' "$*"; }
 ok()    { printf '  ok    %s\n' "$*"; }
 fail() { printf '  FAIL  %s\n' "$*"; failures=$((failures + 1)); }
+
+# wait_ready blocks until bridge-control has finished starting in a container,
+# or until READY_TIMEOUT passes.
+#
+# Replaces a fixed sleep, which was wrong in both directions: too long for a
+# container that was ready in two seconds, and too short for one that has to
+# wait for the bridge to read an existing vault. A fixed number that has to be
+# raised whenever startup gets slower is a number that will be too small again.
+#
+# The marker is the sign-in page announcing itself, which is the last thing to
+# appear. `Forwarding SMTP:` is written before it and was tried first: it is
+# printed while runSignIn is still waiting for the bridge to read its vault, so
+# waiting for it returns before the page exists.
+#
+# Every container here starts without an account, which is the premise of this
+# whole file, so the line always comes. One that had an account signed in would
+# never print it and would sit here until the timeout.
+#
+# The log goes into a variable rather than through a pipe. `grep -q` exits at
+# the first match, the engine writing the log then takes SIGPIPE, and with
+# `set -o pipefail` the whole pipeline reports failure. That only shows up once
+# a log is long enough for the engine still to be writing, which is why it hit
+# exactly one container and looked like a timeout.
+# The second argument is how many times the line has to have appeared. It
+# matters after a restart: the log keeps everything, so the first run's line is
+# still there and a plain search returns at once, before the new run is up.
+wait_ready() {
+    local container="$1" want="${2:-1}" deadline logs
+    deadline=$(( $(date +%s) + READY_TIMEOUT ))
+
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        logs="$("$ENGINE" logs "$container" 2>&1 || true)"
+
+        if [ "$(printf '%s' "$logs" | grep -c 'No account is signed in')" -ge "$want" ]; then
+            return 0
+        fi
+
+        # A container that exited is never going to become ready, and waiting
+        # out the timeout would hide why.
+        if [ "$("$ENGINE" inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != "true" ]; then
+            return 1
+        fi
+
+        sleep 2
+    done
+
+    return 1
+}
 
 cleanup() {
     local name
@@ -222,6 +277,7 @@ log "Starting the container with an empty volume"
     "$IMAGE" >/dev/null
 
 sleep "$STARTUP_SECONDS"
+wait_ready "$CONTAINER" || fail "the container was not ready within ${READY_TIMEOUT}s"
 
 container_logs="$("$ENGINE" logs "$CONTAINER" 2>&1)"
 printf '%s\n' "$container_logs" | sed 's/^/  | /'
@@ -403,10 +459,23 @@ fi
 
 log "Sign-in page, not exposed"
 
-if printf '%s\n' "$container_logs" | grep -q 'The sign-in page is at https://127.0.0.1:'; then
+# Matched on the sentence about where it is bound, not on an address. The log
+# used to print the bind address as though it were somewhere to go, which is
+# what #27 was about, so a test that looked for `https://127.0.0.1:` would be
+# asserting the bug.
+if printf '%s\n' "$container_logs" | grep -q 'bound inside the container, so no browser can reach it'; then
     ok "the sign-in page is running, bound inside the container"
 else
     fail "no sign-in page although no account is signed in"
+fi
+
+# The counter-check: whatever the log says, it must not hand anyone a bind
+# address. 0.0.0.0 is not somewhere a browser can go, and 127.0.0.1 is not
+# somewhere the reader of a container log can go either.
+if printf '%s\n' "$container_logs" | grep -qE 'page is at https://(0\.0\.0\.0|127\.0\.0\.1):'; then
+    fail "the log offers a bind address as though it were a destination"
+else
+    ok "no bind address is offered as a destination"
 fi
 
 setup_fingerprint="$(printf '%s\n' "$container_logs" | sed -n 's/.*Certificate fingerprint (SHA-256): //p' | head -n1)"
@@ -454,7 +523,9 @@ log "Vault key after a restart"
 
 "$ENGINE" stop -t 10 "$CONTAINER" >/dev/null 2>&1 || true
 "$ENGINE" start "$CONTAINER" >/dev/null 2>&1 || true
-sleep "$STARTUP_SECONDS"
+
+# Twice: once from the first start, once from this one.
+wait_ready "$CONTAINER" 2 || fail "container was not ready again within ${READY_TIMEOUT}s"
 
 if [ "$("$ENGINE" inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" = "true" ]; then
     ok "still running after a restart"
@@ -524,7 +595,7 @@ readonly CONFIGURED_CONTAINER="$CONTAINER-configured"
     -v "$update_volume_dir:/data:Z" \
     "$IMAGE" >/dev/null
 
-sleep "$STARTUP_SECONDS"
+wait_ready "$CONFIGURED_CONTAINER" || fail "configured was not ready within ${READY_TIMEOUT}s"
 
 configured_info="$("$ENGINE" exec "$CONFIGURED_CONTAINER" proton-info 2>&1 || true)"
 
@@ -563,7 +634,7 @@ readonly ALT_CONTAINER="$CONTAINER-alt"
     -p "127.0.0.1::$ALT_IMAP_PORT" \
     "$IMAGE" >/dev/null
 
-sleep "$STARTUP_SECONDS"
+wait_ready "$ALT_CONTAINER" || fail "alt was not ready within ${READY_TIMEOUT}s"
 
 alt_logs="$("$ENGINE" logs "$ALT_CONTAINER" 2>&1)"
 printf '%s\n' "$alt_logs" | tail -n 20 | sed 's/^/  | /'
@@ -626,7 +697,7 @@ readonly EXPOSED_CONTAINER="$CONTAINER-exposed"
     -p "127.0.0.1::8443" \
     "$IMAGE" >/dev/null
 
-sleep "$STARTUP_SECONDS"
+wait_ready "$EXPOSED_CONTAINER" || fail "exposed was not ready within ${READY_TIMEOUT}s"
 
 exposed_logs="$("$ENGINE" logs "$EXPOSED_CONTAINER" 2>&1)"
 
@@ -755,7 +826,7 @@ readonly CLOSED_CONTAINER="$CONTAINER-closed"
     -v "$update_volume_dir:/data:Z" \
     "$IMAGE" >/dev/null
 
-sleep "$STARTUP_SECONDS"
+wait_ready "$CLOSED_CONTAINER" || fail "closed was not ready within ${READY_TIMEOUT}s"
 
 if "$ENGINE" exec "$CLOSED_CONTAINER" test -f /data/config/protonmail/bridge-v3/setup/token 2>/dev/null; then
     fail "the token from the exposed run is still in the volume"

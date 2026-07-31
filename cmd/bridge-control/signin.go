@@ -25,6 +25,26 @@ const accountPollInterval = 30 * time.Second
 // How long to wait before trying the event stream again after it ended.
 const streamRetryDelay = 5 * time.Second
 
+// How long the bridge is given to name its accounts before an empty list is
+// taken at face value.
+//
+// The bridge answers gRPC calls before it has finished reading its vault, so
+// for the first seconds of its life it reports no accounts even when it has
+// one. Acting on that opened the sign-in page on every restart of a container
+// that was already signed in, for as long as it took the vault to load: 6.9
+// seconds, measured on 2026-07-31, on an idle machine.
+//
+// 30 seconds because the cost is lopsided. It is only ever spent in full by a
+// container whose vault really is empty, which happens once in its life and
+// ends with somebody signing in anyway. A server under load or on slow storage
+// may take several times 7 seconds without the page being wrong to wait for,
+// and being wrong here means an HTTPS server that accepts a Proton password
+// running when it has no reason to.
+const accountsReportedTimeout = 30 * time.Second
+
+// How often to ask again while waiting for that.
+const accountsReportedInterval = time.Second
+
 // runSignIn keeps the sign-in page available whenever it is needed, and only
 // then.
 //
@@ -32,7 +52,7 @@ const streamRetryDelay = 5 * time.Second
 // the Proton password changes, when the session is revoked, after a long time
 // offline or after a failed sync. A page that only appeared during
 // installation would leave a container nobody can get back into.
-func runSignIn(ctx context.Context, cfg config.Config, client *bridgeclient.Client) {
+func runSignIn(ctx context.Context, cfg config.Config, client *bridgeclient.Client, vaultExists bool) {
 	session := login.New(client)
 
 	// Buffered by one: a burst of events only needs to result in one look at
@@ -41,8 +61,24 @@ func runSignIn(ctx context.Context, cfg config.Config, client *bridgeclient.Clie
 
 	go streamEvents(ctx, client, session, changed)
 
+	// Once, before the loop, and only when there could be something to wait
+	// for. A container whose vault did not exist before this start has no
+	// account by definition, and making it wait would be a delay dressed up as
+	// caution.
+	//
+	// After the bridge has answered, an empty list means what it says: an
+	// account was removed, not that the vault is still loading. Waiting again on
+	// every pass would delay the page coming back after somebody signs the last
+	// account out, which is exactly when it is wanted.
+	//
+	// Said out loud when it times out, because the two ways of arriving at an
+	// empty list look identical afterwards and only one of them is fine.
+	if vaultExists && !control.WaitForAccounts(ctx, client, accountsReportedTimeout, accountsReportedInterval) {
+		logf("The bridge named no account within %s, treating the vault as empty.", accountsReportedTimeout)
+	}
+
 	for ctx.Err() == nil {
-		needed, err := control.AccountsNeedSignIn(ctx, client)
+		needed, _, err := control.AccountsNeedSignIn(ctx, client)
 		if err != nil {
 			logf("WARNING: %v", err)
 			waitFor(ctx, changed, accountPollInterval)
@@ -107,12 +143,26 @@ func serveSetup(ctx context.Context, cfg config.Config, client *bridgeclient.Cli
 		return
 	}
 
-	logf("No account is signed in. The sign-in page is at https://%s", server.Address())
+	// No address on this line, on purpose.
+	//
+	// It used to print server.Address(), which is what the server binds to and
+	// not somewhere anyone can go. Exposed that reads `https://0.0.0.0:8443`,
+	// which no browser can open, and it came after the block above that had
+	// already given both real addresses and the token. Not exposed it reads
+	// `https://127.0.0.1:8443`, which is correct and still wrong: it looks like
+	// an invitation, and the sentence explaining that no browser can reach it
+	// only follows on the next line.
+	//
+	// A bind address is an implementation detail of the listener. Whoever
+	// reads a log wants somewhere to go, and if there is nowhere, the honest
+	// thing is to say so rather than to print the nearest-looking string.
+	logf("No account is signed in.")
 	logf("Certificate fingerprint (SHA-256): %s", server.Fingerprint())
 
 	if !cfg.SetupExpose {
-		logf("It is bound inside the container. Sign in with: docker exec -it <container> proton-login")
-		logf("To reach it from a browser, set BRIDGE_SETUP_EXPOSE=true and read the access token from this log.")
+		logf("The sign-in page is bound inside the container, so no browser can reach it.")
+		logf("Sign in with: docker exec -it <container> proton-login")
+		logf("To use a browser instead, set BRIDGE_SETUP_EXPOSE=true and read the access token from this log.")
 	}
 
 	serveCtx, cancel := context.WithCancel(ctx)
@@ -200,7 +250,7 @@ func watchForAccount(ctx context.Context, client *bridgeclient.Client, session *
 			return
 		}
 
-		needed, err := control.AccountsNeedSignIn(ctx, client)
+		needed, _, err := control.AccountsNeedSignIn(ctx, client)
 		if err == nil && !needed {
 			server.MarkSignedIn()
 			return
