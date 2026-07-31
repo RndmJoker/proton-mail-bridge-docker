@@ -1,0 +1,103 @@
+name: Upstream
+
+# Watches Proton's bridge releases. It builds nothing and publishes nothing.
+#
+# Two separate questions, on purpose, because they have nothing to do with each
+# other:
+#
+#   1. Does the pinned tag still point at the pinned commit? A moved tag is the
+#      cheap move after an upstream account takeover and leaves no trace in a
+#      build that names only the hash. A mismatch fails this workflow, loudly.
+#
+#   2. Has Proton published something newer? Then two issues get filed, one
+#      here and one in proton-mcp, and that is all. The gRPC interface this
+#      container drives can change between releases in ways that fail nothing
+#      and break everything, so a person reads the changelog before anything is
+#      published under this name.
+#
+# Question 1 cannot block question 2 or the other way round. They are separate
+# jobs so that one failing still answers the other.
+
+on:
+  schedule:
+    # Off the hour: scheduled runs across GitHub queue at :00 and get delayed.
+    #
+    # 05:23 UTC is early morning locally. Proton's last five releases went out
+    # between 09:00 and 16:00 UTC, so a run at this time picks up yesterday's
+    # and the issue is waiting rather than arriving mid-afternoon.
+    #
+    # GitHub disables scheduled workflows after 60 days without activity in the
+    # repository. A quiet stretch that long stops this without saying so.
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pin:
+    name: The pinned tag has not moved
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare the upstream tag against the pinned commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/ci/check-upstream-pin.sh
+
+  release:
+    name: What Proton published
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare the latest release against what is pinned
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/ci/check-upstream-release.sh
+
+      # The bot exists because GITHUB_TOKEN cannot write outside this
+      # repository, and one of the two issues belongs in proton-mcp. It is a
+      # GitHub App rather than a personal token: what is stored here is the
+      # app's private key, and the token the workflow actually carries is
+      # minted per run and expires within the hour.
+      #
+      # `repositories` narrows the token further, to the two it needs.
+      - name: Get a token for the bot
+        if: steps.upstream.outputs.differs == 'true'
+        id: bot
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.WATCHER_APP_ID }}
+          private-key: ${{ secrets.WATCHER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            proton-mail-bridge-docker
+            proton-mcp
+
+      - name: File an issue in each repository
+        if: steps.upstream.outputs.differs == 'true'
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+          UPSTREAM_VERSION: ${{ steps.upstream.outputs.version }}
+          PINNED_TAG: ${{ steps.upstream.outputs.pinned_tag }}
+          RELEASE_URL: ${{ steps.upstream.outputs.url }}
+          CHANGELOG_FILE: ${{ steps.upstream.outputs.changelog_file }}
+        run: bash scripts/ci/file-upstream-issues.sh
+
+      - name: Say so in the run summary
+        run: |
+          if [ "${{ steps.upstream.outputs.differs }}" = "true" ]; then
+            {
+              echo "### Proton published ${{ steps.upstream.outputs.tag }}"
+              echo ""
+              echo "This image is built from \`${{ steps.upstream.outputs.pinned_tag }}\`."
+              echo ""
+              echo "${{ steps.upstream.outputs.url }}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Up to date with \`${{ steps.upstream.outputs.pinned_tag }}\`." >> "$GITHUB_STEP_SUMMARY"
+          fi
