@@ -1,0 +1,87 @@
+name: CodeQL
+
+# Replaces the default setup, which could not see most of this project.
+#
+# The gRPC client in internal/bridgepb is generated during the build and
+# deliberately not committed, for the reasons in proto/README.md. The default
+# setup runs an autobuild that knows nothing about scripts/generate-proto.sh,
+# so the package was absent when the analysis ran and it said so:
+#
+#   Some packages could not be found: .../internal/bridgepb
+#   ...source files that use them may only be partially analyzed.
+#
+# The packages that import it are bridgeclient, control, login, setup and info,
+# plus all three binaries. That is the part worth scanning: the gRPC client, the
+# sign-in state machine, and an HTTPS server that accepts a Proton password. All
+# of it had been analysed in part, and nothing said so except a warning on a
+# settings page.
+#
+# What this workflow adds over the default setup is one line, the generate step
+# before init. Everything else is here because a workflow cannot inherit half of
+# a default.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, as the default setup was. Off the hour and off Monday morning,
+    # because scheduled runs queue at both.
+    - cron: '41 4 * * 3'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+
+    strategy:
+      # One language failing should not hide what the other found.
+      fail-fast: false
+      matrix:
+        # The two the default setup covered. `actions` scans the workflow files
+        # themselves, which now includes this one.
+        language: [go, actions]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        if: matrix.language == 'go'
+        with:
+          go-version-file: go.mod
+
+      # The one line this whole workflow exists for. Nothing here compiles
+      # without it, and CodeQL has to compile Go to analyse it.
+      - name: Generate the gRPC client
+        if: matrix.language == 'go'
+        run: bash scripts/generate-proto.sh
+
+      - name: Initialise CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # No `queries:` on purpose. The default setup ran the default suite,
+          # and this changes one thing: whether CodeQL can see the code. Widening
+          # the suite in the same step would mean not knowing afterwards which
+          # of the two produced any new alert. security-extended is worth its
+          # own decision, once this one has been read.
+
+      # Rather than autobuild: this fails loudly if the generate step above
+      # ever stops producing what the code needs, where autobuild would fall
+      # back to guessing and quietly analyse less.
+      - name: Build
+        if: matrix.language == 'go'
+        run: go build ./...
+
+      - name: Analyse
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}
