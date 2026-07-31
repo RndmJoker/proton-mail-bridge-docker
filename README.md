@@ -68,6 +68,29 @@ docker run -d --name proton-bridge \
 
 Signing in and everything after it works the same as below; only the image name differs.
 
+### What an image says about itself
+
+Every image carries the standard OCI labels, plus two that name the upstream build it contains:
+
+```bash
+docker inspect --format '{{json .Config.Labels}}' ghcr.io/rndmjoker/proton-mail-bridge-docker:edge
+```
+
+The same is readable from inside a running container, where `docker inspect` is not available:
+
+```bash
+docker exec proton-bridge cat /etc/image-provenance
+```
+
+```
+image-version=0.5.1
+image-revision=186d1f603e356a8c3d5b11cb6106953398229ce4
+bridge-version=3.25.0
+bridge-commit=f1f599e97167265cb0d10ad3d169269c324d9cc7
+```
+
+`bridge-commit` is the one worth keeping: it is the exact upstream commit the bridge inside was compiled from, so an image can be traced back to Proton's source without trusting anything this repository says about it.
+
 ### Checking where an image came from
 
 Every published image carries signed build provenance. It records which workflow built it, from which repository, at which commit, and it is signed keyless through Sigstore, so there is no signing key anywhere for someone to steal.
@@ -95,8 +118,12 @@ source docker/bridge-version
 docker build \
   --build-arg "BRIDGE_COMMIT=$BRIDGE_COMMIT" \
   --build-arg "BRIDGE_VERSION=$BRIDGE_VERSION" \
+  --build-arg "IMAGE_VERSION=$(cat VERSION)" \
+  --build-arg "IMAGE_REVISION=$(git rev-parse HEAD)" \
   -f docker/Dockerfile -t proton-mail-bridge:local .
 ```
+
+All four are required and the build stops without them. `scripts/ci/smoke-test.sh` works them out itself, so it is the shorter way to the same image plus the checks that go with it.
 
 The build fetches the bridge source from Proton at the commit recorded in [`docker/bridge-version`](docker/bridge-version) and compiles it with `make build-nogui`. It takes a few minutes; nothing is downloaded prebuilt. In a second stage it builds `bridge-control` and `proton-info` from this repository, including the gRPC client, which is generated during the build rather than kept in the repository. See [`proto/README.md`](proto/README.md).
 

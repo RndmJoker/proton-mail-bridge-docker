@@ -179,6 +179,79 @@ RUN chmod 0755 \
         /usr/local/bin/entrypoint.sh \
     && install -d -o bridge -g bridge -m 0700 /data
 
+# ---------------------------------------------------------------------------
+# What the image says about itself
+# ---------------------------------------------------------------------------
+#
+# As late as it can go, which is not quite the end. An ARG invalidates every
+# layer after it as soon as its value changes, and IMAGE_REVISION changes with
+# every commit; placed further up, editing a readme would throw away the apt
+# install. It cannot go after `USER bridge`, because writing the file below
+# needs root, so what gets rebuilt on every commit is this plus five metadata
+# instructions that cost nothing.
+#
+# org.opencontainers.image.source is the one that does real work: ghcr.io has
+# no description field of its own and shows the readme of whichever repository
+# a package is linked to. Without this label the package page stays empty and
+# offers no way back here. Docker Hub keeps its own text, see
+# docker/dockerhub-description.md.
+#
+# The two BRIDGE_* values are declared again because build arguments do not
+# cross a FROM. They are repeated here rather than left to the readme so that
+# `docker inspect` alone answers which upstream commit is inside. For an image
+# whose whole point is a pinned commit, that answer should not require cloning
+# anything.
+#
+# Supplied by the caller, like the ones in the first stage and for the same
+# reason: no defaults, because an image that cannot say what it is built from
+# is worse than a build that stops. scripts/ci/smoke-test.sh works them out, so
+# neither a local build nor CI passes them by hand.
+ARG BRIDGE_COMMIT
+ARG BRIDGE_VERSION
+ARG IMAGE_VERSION
+ARG IMAGE_REVISION
+
+# This file is what keeps the labels below honest, and it is not optional.
+#
+# buildah builds the cache key of a LABEL instruction from the unexpanded text.
+# For the cache, `${IMAGE_REVISION}` stays literally that, so a rebuild with a
+# different value reuses the old layer and the image ships the previous
+# commit's labels without a word. Measured on 2026-07-31: two builds, different
+# build arguments, identical labels.
+#
+# A RUN is keyed on the expanded command, so it breaks the cache correctly and
+# everything after it is rebuilt. Verified in both directions on the same day:
+# without this line the second build kept the first one's label; with it, it
+# did not.
+#
+# BuildKit may well handle the LABEL correctly on its own. This file has to
+# work under three builders, and being right under only two of them is the
+# failure this comment exists to prevent.
+#
+# The file earns its place anyway: `cat /etc/image-provenance` answers what is
+# inside without docker inspect, which is the only way to ask from a shell in
+# the running container.
+# The test is not decoration. An ARG without a default does not stop a build
+# when it is missing, it expands to nothing, so the image would ship empty
+# labels and look fine doing it. The two in the first stage fail loudly by
+# accident, because `git fetch ""` cannot succeed; these two would not.
+RUN test -n "${IMAGE_VERSION}"  || { echo "IMAGE_VERSION is empty"  >&2; exit 1; } \
+    && test -n "${IMAGE_REVISION}" || { echo "IMAGE_REVISION is empty" >&2; exit 1; } \
+    && printf 'image-version=%s\nimage-revision=%s\nbridge-version=%s\nbridge-commit=%s\n' \
+        "${IMAGE_VERSION}" "${IMAGE_REVISION}" "${BRIDGE_VERSION}" "${BRIDGE_COMMIT}" \
+        > /etc/image-provenance
+
+LABEL org.opencontainers.image.title="proton-mail-bridge-docker" \
+      org.opencontainers.image.description="Proton Mail Bridge for servers: no graphical interface, configured through environment variables, one-time login. Unofficial." \
+      org.opencontainers.image.source="https://github.com/RndmJoker/proton-mail-bridge-docker" \
+      org.opencontainers.image.url="https://github.com/RndmJoker/proton-mail-bridge-docker" \
+      org.opencontainers.image.documentation="https://github.com/RndmJoker/proton-mail-bridge-docker#readme" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.revision="${IMAGE_REVISION}" \
+      com.rndmjoker.bridge.version="${BRIDGE_VERSION}" \
+      com.rndmjoker.bridge.commit="${BRIDGE_COMMIT}"
+
 USER bridge
 WORKDIR /home/bridge
 
