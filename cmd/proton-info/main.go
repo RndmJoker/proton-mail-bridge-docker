@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/bridgeclient"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/bridgepb"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/certinfo"
+	"github.com/RndmJoker/proton-mail-bridge-docker/internal/config"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/control"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/info"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -34,7 +36,19 @@ const callTimeout = 15 * time.Second
 // works whether or not forwarding succeeded.
 const loopback = "127.0.0.1"
 
+// secrets is the flag that lets the bridge password out.
+//
+// The default is off, which is the point. What people paste into a bug report
+// is whatever the command printed, and until 2026-07-31 that always contained
+// a live credential: an invocation meant only to check whether an account was
+// connected put one into a session transcript. The capability has to exist,
+// because a mail client cannot be configured without the password. What it
+// should not be is what happens when somebody asks a question about ports.
+var secrets = flag.Bool("secrets", false, "include the bridge password in the output")
+
 func main() {
+	flag.Parse()
+
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "proton-info: %v\n", err)
 		os.Exit(1)
@@ -65,6 +79,18 @@ func run() error {
 	report, err := collect(ctx, client)
 	if err != nil {
 		return err
+	}
+
+	report.Secrets = *secrets
+
+	cfg, err := config.FromEnv()
+	if err != nil {
+		// Not fatal. The published ports are an extra, and a report without
+		// them still tells somebody everything else they came for.
+		fmt.Fprintf(os.Stderr, "proton-info: ignoring the environment: %v\n", err)
+	} else {
+		report.PublicIMAPPort = cfg.PublicIMAPPort
+		report.PublicSMTPPort = cfg.PublicSMTPPort
 	}
 
 	fmt.Print(info.Format(report))
@@ -121,6 +147,7 @@ func collect(ctx context.Context, client *bridgeclient.Client) (info.Report, err
 			State:     user.GetState().String(),
 			Addresses: user.GetAddresses(),
 			Password:  string(user.GetPassword()),
+			SplitMode: user.GetSplitMode(),
 		})
 	}
 

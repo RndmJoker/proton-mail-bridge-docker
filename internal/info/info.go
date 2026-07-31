@@ -20,6 +20,11 @@ type Account struct {
 	State     string
 	Addresses []string
 	Password  string
+
+	// SplitMode is the bridge's per-account setting for whether each address is
+	// its own login. False is combined mode, which is Proton's default and the
+	// source of the surprise this report now names.
+	SplitMode bool
 }
 
 // Report is everything proton-info shows.
@@ -31,6 +36,21 @@ type Report struct {
 	SMTPPort int
 	IMAPSSL  bool
 	SMTPSSL  bool
+
+	// PublicIMAPPort and PublicSMTPPort are what the operator published the
+	// ports as on the host. Zero when they were not declared.
+	//
+	// The container cannot find this out. Publishing a port happens outside it,
+	// and from inside there is no way to see which port it landed on. The only
+	// mechanism that would work is reading the container engine's socket, which
+	// means handing a container that holds a mailbox control of the engine, for
+	// a line of output. So it is asked for instead.
+	PublicIMAPPort int
+	PublicSMTPPort int
+
+	// Secrets is whether the bridge password may be printed. False leaves the
+	// report safe to paste into a bug report, which is what people do with it.
+	Secrets bool
 
 	// Fingerprint of the certificate the mail ports present. Empty if it could
 	// not be fetched, which is not fatal: the rest of the report is still
@@ -58,6 +78,72 @@ func connectionMode(useSSL bool) string {
 	return "STARTTLS"
 }
 
+// modeName labels the account mode the way Proton's own settings do.
+func modeName(splitMode bool) string {
+	if splitMode {
+		return "split mode"
+	}
+
+	return "combined mode"
+}
+
+// modeExplanation says what the mode means for the password below it.
+//
+// The sentence exists because of what somebody does with the answer they never
+// got. In combined mode the bridge password belongs to the account, not to an
+// address, so a configuration handed to a script or another person in the
+// belief that it opens one address opens all of them. Found on 2026-07-31 by
+// signing in with a single address and receiving the entire mailbox, which is
+// correct behaviour and the last thing anyone expects.
+func modeExplanation(account Account) string {
+	if account.SplitMode {
+		return fmt.Sprintf("    Each of these %d addresses is its own login, with its own password.\n",
+			len(account.Addresses))
+	}
+
+	return fmt.Sprintf("    All %d addresses share one login and one mailbox. The password below\n"+
+		"    opens the whole account, whichever address is used as the username.\n",
+		len(account.Addresses))
+}
+
+// hostPorts names the ports on the host, or says that the container cannot
+// know them and gives the form to fill in.
+//
+// The same shape as the sign-in page, which prints the addresses it can know,
+// names the one it cannot, and shows what to substitute. Printing a number
+// without saying what it is the answer to is how somebody ends up typing 1143
+// into a mail client that needed 11143.
+func hostPorts(report Report) string {
+	var b strings.Builder
+
+	b.WriteString("\n")
+
+	if report.PublicIMAPPort == 0 && report.PublicSMTPPort == 0 {
+		b.WriteString("  Those are the ports inside the container. Which ports they were\n")
+		b.WriteString("  published as on the host is decided outside it and cannot be seen from\n")
+		b.WriteString("  here. Published with -p 11143:%d, IMAP is at 127.0.0.1:11143 on your\n")
+		b.WriteString("  host. Set BRIDGE_PUBLIC_IMAP_PORT and BRIDGE_PUBLIC_SMTP_PORT to have\n")
+		b.WriteString("  them named here instead.\n")
+
+		return strings.Replace(b.String(), "%d", fmt.Sprint(report.IMAPPort), 1)
+	}
+
+	b.WriteString("  On your host, as published:\n")
+
+	if report.PublicIMAPPort != 0 {
+		fmt.Fprintf(&b, "  IMAP                   127.0.0.1:%d\n", report.PublicIMAPPort)
+	}
+
+	if report.PublicSMTPPort != 0 {
+		fmt.Fprintf(&b, "  SMTP                   127.0.0.1:%d\n", report.PublicSMTPPort)
+	}
+
+	b.WriteString("\n  Those come from BRIDGE_PUBLIC_IMAP_PORT and BRIDGE_PUBLIC_SMTP_PORT, so\n")
+	b.WriteString("  they are what somebody said, not what the container measured.\n")
+
+	return b.String()
+}
+
 // Format renders the report.
 //
 // Written by hand rather than through a table library: this is the one output
@@ -69,14 +155,16 @@ func Format(report Report) string {
 	fmt.Fprintf(&b, "Proton Mail Bridge %s\n\n", report.BridgeVersion)
 
 	b.WriteString("Mail server\n")
-	fmt.Fprintf(&b, "  IMAP                   %s:%d  %s\n", report.Address, report.IMAPPort, connectionMode(report.IMAPSSL))
-	fmt.Fprintf(&b, "  SMTP                   %s:%d  %s\n", report.Address, report.SMTPPort, connectionMode(report.SMTPSSL))
+	fmt.Fprintf(&b, "  IMAP                   %s:%d  %s   inside the container\n", report.Address, report.IMAPPort, connectionMode(report.IMAPSSL))
+	fmt.Fprintf(&b, "  SMTP                   %s:%d  %s   inside the container\n", report.Address, report.SMTPPort, connectionMode(report.SMTPSSL))
 
 	if report.Fingerprint != "" {
 		fmt.Fprintf(&b, "  Certificate (SHA-256)  %s\n", report.Fingerprint)
 	} else {
 		fmt.Fprintf(&b, "  Certificate (SHA-256)  unavailable: %s\n", report.FingerprintErr)
 	}
+
+	b.WriteString(hostPorts(report))
 
 	b.WriteString("\n  The certificate is self-signed and generated on this machine, so every\n")
 	b.WriteString("  mail client will ask about it once. Compare what it shows against the\n")
@@ -105,15 +193,24 @@ func Format(report Report) string {
 	}
 
 	for _, account := range report.Accounts {
-		fmt.Fprintf(&b, "  %s  (%s)\n", account.Username, strings.ToLower(account.State))
+		fmt.Fprintf(&b, "  %s  (%s, %s)\n", account.Username, strings.ToLower(account.State), modeName(account.SplitMode))
 		fmt.Fprintf(&b, "    Addresses        %s\n", strings.Join(account.Addresses, ", "))
-		fmt.Fprintf(&b, "    Bridge password  %s\n", account.Password)
+		b.WriteString(modeExplanation(account))
+
+		if report.Secrets {
+			fmt.Fprintf(&b, "    Bridge password  %s\n", account.Password)
+		} else {
+			b.WriteString("    Bridge password  hidden, run with --secrets to show it\n")
+		}
 	}
 
-	b.WriteString("\n  The bridge password is not your Proton password. It is generated per\n")
-	b.WriteString("  account and it is what a mail client authenticates with. Anyone who has\n")
-	b.WriteString("  it can read and send your mail through this bridge, so keep it out of\n")
-	b.WriteString("  bug reports and screenshots.\n")
+	if report.Secrets {
+		b.WriteString("\n  This output contains a credential.\n")
+		b.WriteString("\n  The bridge password is not your Proton password. It is generated per\n")
+		b.WriteString("  account and it is what a mail client authenticates with. Anyone who has\n")
+		b.WriteString("  it can read and send your mail through this bridge, so keep it out of\n")
+		b.WriteString("  bug reports and screenshots.\n")
+	}
 
 	return b.String()
 }
