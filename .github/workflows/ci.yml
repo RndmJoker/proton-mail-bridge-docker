@@ -110,8 +110,18 @@ jobs:
     runs-on: ubuntu-latest
     # Compiling the bridge from source is the slow part of this workflow.
     timeout-minutes: 45
+    env:
+      # The builder is chosen here rather than left to the runner's default.
+      # BuildKit is what this image is expected to be built with; scripts/ci/
+      # check-builder.sh below is what proves the variable took effect.
+      DOCKER_BUILDKIT: 1
     steps:
       - uses: actions/checkout@v4
+
+      # First, so that a wrong builder costs twenty seconds instead of the
+      # three quarters of an hour the real build takes.
+      - name: Which builder is in use
+        run: bash scripts/ci/check-builder.sh
 
       # Building the image is also the only way to find out whether the pinned
       # upstream commit still fetches, so this runs on every change, not only
