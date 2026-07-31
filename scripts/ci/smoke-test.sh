@@ -87,15 +87,67 @@ chmod 0777 "$volume_dir"
 # Build
 # --------------------------------------------------------------------------
 
+# Worked out here rather than passed in, so that a local build produces the
+# same labels as a published one and nobody has to remember two arguments.
+image_version="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")"
+readonly image_version
+
+# A build from a tarball has no git history. "unknown" is honest; an empty
+# label would look like the field was never set.
+image_revision="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+readonly image_revision
+
 if [ -z "${SKIP_BUILD:-}" ]; then
     log "Building $IMAGE from upstream $BRIDGE_COMMIT"
     "$ENGINE" build \
         --build-arg "BRIDGE_COMMIT=$BRIDGE_COMMIT" \
         --build-arg "BRIDGE_VERSION=$BRIDGE_VERSION" \
+        --build-arg "IMAGE_VERSION=$image_version" \
+        --build-arg "IMAGE_REVISION=$image_revision" \
         -f "$REPO_ROOT/docker/Dockerfile" \
         -t "$IMAGE" \
         "$REPO_ROOT"
 fi
+
+# --------------------------------------------------------------------------
+# The image says where it came from
+# --------------------------------------------------------------------------
+
+# This check is also the guard. The publish workflow runs this script before it
+# pushes anything, so an image that lost its labels cannot reach a registry no
+# matter who forgets what.
+#
+# org.opencontainers.image.source is what links a ghcr package back to this
+# repository and makes its page show the readme. Without it the page is empty,
+# which looks to a visitor like a broken package rather than a missing label.
+#
+# Compared against expected values, not merely checked for being non-empty: a
+# mistyped label name would produce an empty string, and so would a label that
+# was never set. Those have to fail the same way.
+
+log "Labels on the image"
+
+label() {
+    "$ENGINE" inspect --format "{{index .Config.Labels \"$1\"}}" "$IMAGE" 2>/dev/null || true
+}
+
+check_label() {
+    local name="$1" want="$2" got
+    got="$(label "$name")"
+
+    if [ "$got" = "$want" ]; then
+        ok "$name = $got"
+    else
+        fail "$name is '$got', expected '$want'"
+    fi
+}
+
+check_label org.opencontainers.image.source "https://github.com/RndmJoker/proton-mail-bridge-docker"
+check_label org.opencontainers.image.licenses "GPL-3.0-or-later"
+check_label org.opencontainers.image.version "$image_version"
+check_label org.opencontainers.image.revision "$image_revision"
+check_label com.rndmjoker.bridge.version "$BRIDGE_VERSION"
+check_label com.rndmjoker.bridge.commit "$BRIDGE_COMMIT"
 
 # --------------------------------------------------------------------------
 # The binary is the build we asked for
