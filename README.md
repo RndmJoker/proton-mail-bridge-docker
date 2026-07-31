@@ -177,7 +177,30 @@ The log prints an access token, generated fresh at every start, which the page t
 docker exec proton-bridge proton-info
 ```
 
-It shows the bridge password, the addresses, the ports actually in use, the fingerprint of the self-signed certificate your mail client will ask about, and whether the bridge's own updater is off. It prints on request only, never at startup and never into the log, because the bridge password is a credential and a credential in a log file travels into every bug report that log is attached to.
+It shows the addresses, the ports, the fingerprint of the self-signed certificate your mail client will ask about, and whether the bridge's own updater is off.
+
+**It does not print the bridge password unless you ask:**
+
+```bash
+docker exec proton-bridge proton-info --secrets
+```
+
+The default output is safe to paste into a bug report, and revealing a credential is a thing you did on purpose rather than a side effect of asking about ports.
+
+**The ports it prints are the container's own.** Which ports they were published as on your host is decided outside the container and cannot be seen from inside it, so `proton-info` says so and shows the form to fill in. Set `BRIDGE_PUBLIC_IMAP_PORT` and `BRIDGE_PUBLIC_SMTP_PORT` and it names them instead, marked as something you said rather than something it measured.
+
+That matters immediately if you already run Proton's desktop bridge, which holds 1143 and 1025 on the host, so this container has to be published elsewhere.
+
+**Read the account mode it reports.** In combined mode, which is Proton's default, all addresses of an account share one login and the bridge password belongs to the account rather than to any one address:
+
+```
+rndmjoker  (connected, combined mode)
+  Addresses        a@example.com, b@example.com, c@example.com
+  All 3 addresses share one login and one mailbox. The password below
+  opens the whole account, whichever address is used as the username.
+```
+
+Typing one address as the username and receiving the whole mailbox is correct behaviour and the last thing most people expect. **A configuration handed to a script or another person in the belief that it opens one address opens all of them.** Split mode, where each address is its own login, is set in Proton's own bridge settings and is not yet reachable from this container.
 
 Arguments after the image name replace `bridge-control`, after the volume and the keychain have been prepared either way:
 

@@ -627,10 +627,13 @@ log "IMAP on a configured port"
 readonly ALT_IMAP_PORT=2143
 readonly ALT_CONTAINER="$CONTAINER-alt"
 
+readonly PUBLIC_IMAP_PORT=12143
+
 "$ENGINE" run -d \
     --name "$ALT_CONTAINER" \
     -v "$volume_dir:/data:Z" \
     -e "BRIDGE_IMAP_PORT=$ALT_IMAP_PORT" \
+    -e "BRIDGE_PUBLIC_IMAP_PORT=$PUBLIC_IMAP_PORT" \
     -p "127.0.0.1::$ALT_IMAP_PORT" \
     "$IMAGE" >/dev/null
 
@@ -672,6 +675,35 @@ if printf '%s\n' "$alt_logs" | grep -q 'Forwarding IMAP: .*:1143'; then
     fail "IMAP is still being forwarded on 1143, so the configured port was not applied"
 else
     ok "nothing is left listening on the default IMAP port"
+fi
+
+# What proton-info says about ports, which is the report people actually read
+# when a mail client refuses to connect.
+#
+# No account is signed in here, so the password half of that report cannot be
+# checked without one. What can be checked is that the container labels its own
+# ports as its own, and repeats the published one it was told about.
+alt_info="$("$ENGINE" exec "$ALT_CONTAINER" proton-info 2>&1 || true)"
+
+if printf '%s\n' "$alt_info" | grep -q "$ALT_IMAP_PORT.*inside the container"; then
+    ok "proton-info says which side its ports are on"
+else
+    fail "proton-info prints ports without saying they are the container's own"
+fi
+
+if printf '%s\n' "$alt_info" | grep -q "127.0.0.1:$PUBLIC_IMAP_PORT"; then
+    ok "proton-info repeats the published port it was told about"
+else
+    fail "BRIDGE_PUBLIC_IMAP_PORT=$PUBLIC_IMAP_PORT did not reach the report"
+fi
+
+# The counter-check to the one above. A report that always claimed a host port
+# would pass the previous check while telling everyone without the variable set
+# a number nobody chose.
+if printf '%s\n' "$alt_info" | grep -q 'not what the container measured'; then
+    ok "the published port is marked as something it was told, not something it measured"
+else
+    fail "the published port is presented as though the container found it out"
 fi
 
 # --------------------------------------------------------------------------

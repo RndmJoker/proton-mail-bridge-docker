@@ -26,6 +26,8 @@ func exampleReport() Report {
 func TestFormat(t *testing.T) {
 	out := Format(exampleReport())
 
+	// The password is deliberately not in this list. It used to be, which is
+	// what made this test assert the behaviour of #30.
 	for _, want := range []string{
 		"3.25.0",
 		"127.0.0.1:1143",
@@ -33,11 +35,114 @@ func TestFormat(t *testing.T) {
 		"AB:CD:EF",
 		"someone@example.invalid",
 		"someone-else@example.invalid",
-		"not-a-real-password",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("%q is missing from the output:\n%s", want, out)
 		}
+	}
+}
+
+// TestFormatHidesThePasswordByDefault is #30.
+//
+// What people paste into a bug report is whatever the command printed. Until
+// this changed, that always contained a live credential: on 2026-07-31 an
+// invocation meant only to check whether an account was connected put one into
+// a session transcript.
+func TestFormatHidesThePasswordByDefault(t *testing.T) {
+	out := Format(exampleReport())
+
+	if strings.Contains(out, "not-a-real-password") {
+		t.Errorf("the password is in the default output:\n%s", out)
+	}
+
+	// Hidden is not the same as absent. Somebody who needs it has to be told
+	// how to get it, or they will go looking somewhere worse.
+	if !strings.Contains(out, "--secrets") {
+		t.Errorf("the output does not say how to get the password:\n%s", out)
+	}
+}
+
+func TestFormatShowsThePasswordWhenAsked(t *testing.T) {
+	report := exampleReport()
+	report.Secrets = true
+
+	out := Format(report)
+
+	if !strings.Contains(out, "not-a-real-password") {
+		t.Errorf("the password is missing although it was asked for:\n%s", out)
+	}
+
+	// Asking for it is deliberate; being told what the output now contains is
+	// what makes the next paste deliberate too.
+	if !strings.Contains(out, "contains a credential") {
+		t.Errorf("nothing says the output now carries a secret:\n%s", out)
+	}
+}
+
+// TestFormatNamesTheAccountMode is #28.
+//
+// In combined mode the bridge password belongs to the account rather than to an
+// address, so a configuration handed on in the belief that it opens one address
+// opens all of them. Nothing said which mode an account was in, and answering
+// the question took a throwaway program.
+func TestFormatNamesTheAccountMode(t *testing.T) {
+	report := exampleReport()
+
+	out := Format(report)
+
+	if !strings.Contains(out, "combined mode") {
+		t.Errorf("the mode is not named:\n%s", out)
+	}
+
+	if !strings.Contains(out, "opens the whole account") {
+		t.Errorf("combined mode is named without saying what it means:\n%s", out)
+	}
+
+	report.Accounts[0].SplitMode = true
+
+	out = Format(report)
+
+	if !strings.Contains(out, "split mode") {
+		t.Errorf("split mode is not named:\n%s", out)
+	}
+
+	if strings.Contains(out, "opens the whole account") {
+		t.Errorf("split mode is described as combined:\n%s", out)
+	}
+}
+
+// TestFormatSaysWhichSideThePortsAreOn is #29.
+//
+// The ports printed are the container's own. Anyone who published on different
+// ones gets numbers that do not work in their mail client, with nothing saying
+// why. It happens to everybody already running Proton's desktop bridge, which
+// holds 1143 and 1025 on the host.
+func TestFormatSaysWhichSideThePortsAreOn(t *testing.T) {
+	report := exampleReport()
+
+	out := Format(report)
+
+	if !strings.Contains(out, "inside the container") {
+		t.Errorf("the ports are not labelled as the container's own:\n%s", out)
+	}
+
+	if !strings.Contains(out, "BRIDGE_PUBLIC_IMAP_PORT") {
+		t.Errorf("nothing says how to have the published ports named:\n%s", out)
+	}
+
+	report.PublicIMAPPort = 11143
+	report.PublicSMTPPort = 11025
+
+	out = Format(report)
+
+	if !strings.Contains(out, "127.0.0.1:11143") || !strings.Contains(out, "127.0.0.1:11025") {
+		t.Errorf("the declared host ports are missing:\n%s", out)
+	}
+
+	// Said, not measured. The container cannot check this, and a number it
+	// cannot check must not be presented as one it did.
+	if !strings.Contains(out, "not what the container measured") {
+		t.Errorf("the declared ports are presented as fact:\n%s", out)
 	}
 }
 
@@ -125,7 +230,10 @@ func TestFormatWithNoAccounts(t *testing.T) {
 // labelled as what it is, or it gets pasted into a bug report as "the bridge
 // password, which is not secret, right?".
 func TestFormatWarnsAboutThePassword(t *testing.T) {
-	out := Format(exampleReport())
+	report := exampleReport()
+	report.Secrets = true
+
+	out := Format(report)
 
 	if !strings.Contains(out, "not your Proton password") {
 		t.Errorf("the password is not distinguished from the Proton one:\n%s", out)

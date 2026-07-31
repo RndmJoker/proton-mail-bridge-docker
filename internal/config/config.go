@@ -59,6 +59,22 @@ type Config struct {
 	// something to open by accident. With it on, the page demands an access
 	// token that is generated at startup and printed to the log.
 	SetupExpose bool
+
+	// PublicIMAPPort and PublicSMTPPort are what the operator published the
+	// mail ports as on the host. Zero when nobody said.
+	//
+	// Purely descriptive: nothing in the container binds these or checks them.
+	// They exist so that proton-info can name the numbers a mail client
+	// actually needs, which the container cannot find out for itself. Publishing
+	// happens outside it, and reading the engine's socket to find out would mean
+	// giving a container that holds a mailbox control of the engine, for a line
+	// of output.
+	//
+	// Deliberately outside the clash check below. These are host ports; the
+	// three that must not collide are sockets inside the container, and two of
+	// these could legitimately be the same number as one of those.
+	PublicIMAPPort int
+	PublicSMTPPort int
 }
 
 // validLogLevels are the ones the bridge accepts. Anything else makes it exit
@@ -120,6 +136,17 @@ func FromEnv() (Config, error) {
 		return Config{}, err
 	}
 
+	// Zero means "nobody said", which is different from a bad value: an
+	// unparseable one still fails, because a wrong port in a report is worse
+	// than no port at all.
+	if config.PublicIMAPPort, err = hostPort("BRIDGE_PUBLIC_IMAP_PORT"); err != nil {
+		return Config{}, err
+	}
+
+	if config.PublicSMTPPort, err = hostPort("BRIDGE_PUBLIC_SMTP_PORT"); err != nil {
+		return Config{}, err
+	}
+
 	// All three end up as listening sockets in the same container. Two on one
 	// number means one of them silently loses.
 	for _, clash := range []struct {
@@ -156,6 +183,35 @@ func port(name string, fallback int) (int, error) {
 
 	if value < 1024 || value > 65535 {
 		return 0, fmt.Errorf("%s is %d, which is outside 1024-65535; the container does not run as root and cannot bind a privileged port", name, value)
+	}
+
+	return value, nil
+}
+
+// hostPort reads a port on the host rather than one this container binds.
+//
+// Its own parser because port() would be wrong twice over. Its range starts at
+// 1024 and its error explains that the container cannot bind a privileged port,
+// and neither applies: nothing here binds these, and whoever published them may
+// well have used 143 with the privileges to do so. An error that names the
+// wrong reason sends the reader looking in the wrong place.
+//
+// Zero means nobody said, which is not an error. A value that cannot be a port
+// is one: a wrong number in the report is worse than no number, because the
+// missing one sends people to the readme and the wrong one sends them nowhere.
+func hostPort(name string) (int, error) {
+	raw, ok := os.LookupEnv(name)
+	if !ok || raw == "" {
+		return 0, nil
+	}
+
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s is %q, which is not a number", name, raw)
+	}
+
+	if value < 1 || value > 65535 {
+		return 0, fmt.Errorf("%s is %d, which is not a port number", name, value)
 	}
 
 	return value, nil
