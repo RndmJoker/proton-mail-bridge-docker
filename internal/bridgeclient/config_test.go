@@ -262,3 +262,58 @@ func TestRemoveServerConfig(t *testing.T) {
 		}
 	})
 }
+
+func TestVaultExists(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+
+	settings := filepath.Join(dir, "protonmail", "bridge-v3")
+	if err := os.MkdirAll(settings, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// A container that has never run. Nothing to wait for, and saying "maybe"
+	// here would make every first start pay the account timeout for an account
+	// that cannot exist.
+	got, err := VaultExists()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got {
+		t.Fatal("got true for a directory with no vault, want false")
+	}
+
+	if err := os.WriteFile(filepath.Join(settings, VaultFileName), []byte("not really a vault"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err = VaultExists()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !got {
+		t.Fatal("got false with a vault present, want true")
+	}
+}
+
+// TestVaultExistsErrsTowardsWaiting pins the direction the doubtful case leans.
+//
+// Neither variable set, so the settings directory cannot be worked out. Being
+// wrong by waiting costs a delay. Being wrong the other way opens an HTTPS
+// server that accepts a Proton password on a container that is already signed
+// in, which is #35.
+func TestVaultExistsErrsTowardsWaiting(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("HOME", "")
+
+	got, err := VaultExists()
+	if err == nil {
+		t.Fatal("expected an error when neither variable is set")
+	}
+
+	if !got {
+		t.Fatal("got false alongside an error, want true so that the caller waits")
+	}
+}

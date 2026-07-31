@@ -71,6 +71,14 @@ func run() error {
 		return fmt.Errorf("could not remove the stale gRPC config at %s: %w", configPath, err)
 	}
 
+	// Asked before the bridge starts, because the bridge creates this file on
+	// its first run whether or not anybody signs in. Afterwards it says nothing.
+	// See runSignIn for what it is used for.
+	vaultExists, err := bridgeclient.VaultExists()
+	if err != nil {
+		logf("WARNING: could not tell whether a vault exists (%v), assuming it does.", err)
+	}
+
 	bridge, err := startBridge(cfg)
 	if err != nil {
 		return err
@@ -79,7 +87,7 @@ func run() error {
 	bridgeDone := make(chan error, 1)
 	go func() { bridgeDone <- bridge.Wait() }()
 
-	forwarder, err := configure(ctx, cfg, configPath, bridgeDone)
+	forwarder, err := configure(ctx, cfg, configPath, bridgeDone, vaultExists)
 	if err != nil {
 		terminate(bridge)
 		return err
@@ -140,7 +148,7 @@ func startBridge(cfg config.Config) (*exec.Cmd, error) {
 // bridgeDone is watched throughout: if the bridge dies during startup, waiting
 // for a config file it will never write would otherwise run into a timeout
 // and report the wrong cause.
-func configure(ctx context.Context, cfg config.Config, configPath string, bridgeDone <-chan error) (*forward.Forwarder, error) {
+func configure(ctx context.Context, cfg config.Config, configPath string, bridgeDone <-chan error, vaultExists bool) (*forward.Forwarder, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, cfg.StartTimeout)
 	defer cancel()
 
@@ -190,7 +198,7 @@ func configure(ctx context.Context, cfg config.Config, configPath string, bridge
 
 	// Runs for the life of the process: the sign-in page comes and goes with
 	// the account, not with the startup.
-	go runSignIn(ctx, cfg, client)
+	go runSignIn(ctx, cfg, client, vaultExists)
 
 	return startForwarding(ctx, cfg)
 }
