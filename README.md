@@ -14,7 +14,8 @@ Early development. This section always states what actually works, not what is p
 | Image with a running bridge core | done |
 | `bridge-control`: gRPC control, environment variables | done |
 | Setup web page and `proton-login` | done |
-| Workflow that rebuilds on every new bridge release | planned |
+| Published images, signed provenance, nightly rebuild | done |
+| Compose example and a walkthrough for a stranger | planned |
 
 The image builds, the bridge starts, and an account can be signed in. **No test in this repository uses a real Proton account**, so the sign-in itself is exercised by hand rather than by CI. Treat this as early software and keep a copy of anything you care about elsewhere.
 
@@ -38,9 +39,56 @@ Keep it on encrypted storage. Keep it out of backups other people can read. Keep
 
 Running the bridge on a server means decrypted mail lives on that server. That is the trade you are making. Make it knowingly.
 
-## Building and running it
+## Where the images are
 
-There is no published image yet. Build it from this repository:
+Two registries, same image, same digest:
+
+```
+ghcr.io/rndmjoker/proton-mail-bridge-docker
+docker.io/rndmjoker/proton-mail-bridge-docker
+```
+
+| Tag | What it means |
+| :--- | :--- |
+| `3.25.0-0.5.0` | bridge version and image version |
+| `3.25.0`, `3.25` | newest image for that bridge version |
+| `edge` | the newest build, whatever it contains |
+
+**There is no `latest` tag.** Every release so far is marked as a pre-release, and a `latest` tag would tell every tool that looks for one the opposite. It will exist once a version is ready to carry that name.
+
+**Only a digest is immutable.** All of the tags above move: the image is rebuilt every night against the same pinned bridge commit on a newer Debian base, which is how security updates reach it between two releases. Pin `@sha256:...` if you need a fixed target.
+
+```bash
+docker run -d --name proton-bridge \
+  -v proton-bridge-data:/data \
+  -p 127.0.0.1:1143:1143 \
+  -p 127.0.0.1:1025:1025 \
+  ghcr.io/rndmjoker/proton-mail-bridge-docker:edge
+```
+
+Signing in and everything after it works the same as below; only the image name differs.
+
+### Checking where an image came from
+
+Every published image carries signed build provenance. It records which workflow built it, from which repository, at which commit, and it is signed keyless through Sigstore, so there is no signing key anywhere for someone to steal.
+
+```bash
+gh attestation verify oci://ghcr.io/rndmjoker/proton-mail-bridge-docker:edge \
+  --repo RndmJoker/proton-mail-bridge-docker
+```
+
+The same works for the Docker Hub copy:
+
+```bash
+gh attestation verify oci://docker.io/rndmjoker/proton-mail-bridge-docker:edge \
+  --repo RndmJoker/proton-mail-bridge-docker
+```
+
+This is worth doing once for something that will hold the keys to your mailbox.
+
+## Building it yourself
+
+The image is built from Proton's source rather than from a binary, and you can do the same:
 
 ```bash
 source docker/bridge-version
@@ -175,6 +223,10 @@ git verify-tag v0.1.0
 ```
 
 Tags are created locally rather than by CI, because the GitHub API can create tags but cannot sign them. A repository rule rejects any tag without a valid signature.
+
+Pushing such a tag is also what publishes an image. Nothing reaches a registry that did not come through a pull request, pass the smoke test in the same run, and get its provenance signed. See [Where the images are](#where-the-images-are).
+
+A new upstream bridge release does **not** publish anything by itself. A scheduled check notices it and files an issue; what Proton changed is looked at by a person before it goes out under this name.
 
 ## Licence
 

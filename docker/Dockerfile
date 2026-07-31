@@ -13,6 +13,14 @@
 # security updates Debian ships into these tags, and this image holds the key
 # to a whole mailbox. Reproducibility is bought back where it actually matters:
 # the bridge source is pinned to a commit hash in docker/bridge-version.
+#
+# Three builders have to understand this file: BuildKit, which is what CI uses
+# and asserts, and podman with buildah, which is what it is built with locally.
+# No environment variable selects between the last two, so the file stays on
+# what all three understand: no `# syntax=` directive and no BuildKit-only
+# instruction such as `RUN --mount=type=cache`. Changing that for the sake of
+# build speed would mean giving up the local build, and is a decision to be
+# made deliberately rather than by adding a line here.
 
 # ---------------------------------------------------------------------------
 # Stage 1: build the bridge core from source

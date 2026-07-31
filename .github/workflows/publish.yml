@@ -1,0 +1,158 @@
+name: Publish
+
+# Publishing happens on three occasions and no others.
+#
+#   - A version tag. Tags are created and signed on a workstation, never here,
+#     so this only ever runs on something that went through a pull request.
+#   - Once a night. The bridge is pinned to a commit hash, so the same source
+#     is rebuilt on a newer Debian base: this is how security updates reach a
+#     published image between two releases, which was six weeks last time.
+#   - By hand, for whatever falls between the two.
+#
+# Deliberately not on every push to main. The build takes the better part of an
+# hour and a change to the readme has no business starting one.
+#
+# A new upstream bridge release does NOT trigger a build. That is
+# .github/workflows/upstream.yml, and all it does is file an issue: what Proton
+# changed gets looked at by a person before anything is published under this
+# name.
+
+on:
+  push:
+    tags: ['v*']
+  schedule:
+    # Off the hour on purpose. Scheduled runs across GitHub queue at :00, and a
+    # job placed there is regularly delayed by ten minutes or more.
+    #
+    # 03:23 UTC. Nothing depends on the exact time; the nightly rebuild only
+    # picks up base image updates and nobody is waiting for it.
+    #
+    # Note that GitHub disables scheduled workflows after 60 days without any
+    # activity in the repository. A quiet stretch that long stops the rebuild
+    # without saying so.
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # See scripts/ci/check-builder.sh for why this is stated rather than assumed.
+  DOCKER_BUILDKIT: 1
+
+  # What the image is called inside the runner, before it is tagged for the
+  # registries. Only the smoke test ever sees this name.
+  LOCAL_IMAGE: proton-mail-bridge:publish
+
+  DOCKERHUB_USER: rndmjoker
+
+jobs:
+  publish:
+    name: Build, test and publish
+    runs-on: ubuntu-latest
+    # The image job in ci.yml allows 45 minutes for the build alone. This does
+    # the same build, the same smoke test, and then two pushes.
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      # ghcr.io authenticates with the workflow's own GITHUB_TOKEN, so there is
+      # no secret to store for it. Docker Hub is a separate namespace and needs
+      # one.
+      packages: write
+      # Build provenance is signed keyless through Sigstore: the workflow's
+      # OIDC token is the identity, and the certificate it gets back lives for
+      # minutes. No private key is stored anywhere, which is the entire appeal.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Which builder is in use
+        run: bash scripts/ci/check-builder.sh
+
+      # Everything that can be decided without building is decided first. A
+      # missing token or an unparseable version should cost twenty seconds, not
+      # the three quarters of an hour it takes to find out at the end.
+      - name: Work out the tags
+        id: tags
+        run: bash scripts/ci/image-tags.sh
+
+      - name: Check that both registries can be reached
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Through the environment rather than interpolated into the script.
+          # A `${{ }}` inside a run block is pasted in as text before the shell
+          # ever sees it, which is how a value ends up being executed instead
+          # of read.
+          GHCR_USER: ${{ github.repository_owner }}
+        run: |
+          if [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error::DOCKERHUB_TOKEN is not set, so half of this would not be published."
+            echo "::error::Create an access token with write permission on hub.docker.com and store it as a repository secret."
+            exit 1
+          fi
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USER" --password-stdin
+
+      # One invocation builds and tests. The build arguments live in
+      # smoke-test.sh, which reads docker/bridge-version itself, so there is no
+      # second copy of them here to drift out of step.
+      #
+      # Nothing is published that did not pass this.
+      - name: Build the image and run the smoke test
+        env:
+          IMAGE: ${{ env.LOCAL_IMAGE }}
+        run: bash scripts/ci/smoke-test.sh
+
+      - name: Push to both registries
+        id: push
+        run: bash scripts/ci/image-tags.sh | bash scripts/ci/push-image.sh
+
+      # What this records is that this image, at this digest, was built by this
+      # workflow in this repository at this commit. Whoever pulls it can check
+      # that without trusting a signing key that someone had to keep somewhere.
+      #
+      # Pinned to the major tag rather than a commit, unlike everything else in
+      # this repository's CI. A frozen version of a signing action rots against
+      # the Sigstore infrastructure it talks to, and there is nothing here to
+      # notice when it does.
+      #
+      # Filed twice, once per registry. The digest is the same for both, so one
+      # attestation would very likely cover both; verifying by name as well as
+      # by digest is worth one extra step rather than finding out it did not.
+      - name: Attest the image on ghcr.io
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/rndmjoker/proton-mail-bridge-docker
+          subject-digest: ${{ steps.push.outputs.digest }}
+          # Stores the attestation next to the image, so it can be found
+          # without asking GitHub. Only for ghcr: Docker Hub's support for OCI
+          # referrers is newer and this has no way to test it beforehand.
+          push-to-registry: true
+
+      - name: Attest the image on Docker Hub
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: docker.io/rndmjoker/proton-mail-bridge-docker
+          subject-digest: ${{ steps.push.outputs.digest }}
+
+      # After the push, because the first push is what creates the repository
+      # on Docker Hub and an empty repository cannot be described.
+      - name: Update the Docker Hub description
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: bash scripts/ci/sync-dockerhub-description.sh
+
+      - name: What was published
+        run: |
+          echo "### Published" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          bash scripts/ci/image-tags.sh >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "Digest: \`${{ steps.push.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Check where it came from:" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "gh attestation verify oci://ghcr.io/rndmjoker/proton-mail-bridge-docker@${{ steps.push.outputs.digest }} --repo ${{ github.repository }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
