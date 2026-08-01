@@ -60,6 +60,39 @@ type Config struct {
 	// token that is generated at startup and printed to the log.
 	SetupExpose bool
 
+	// AlternativeRouting lets the bridge reach Proton over DNS-over-HTTPS and
+	// third-party infrastructure when the normal API is blocked.
+	//
+	// Off by default, which is the bridge's own default too. It matters to
+	// whoever needs it and to nobody else, and it changes who sees that a
+	// connection to Proton is being attempted, so it is not something to turn
+	// on for everyone by default.
+	AlternativeRouting bool
+
+	// ShowAllMail decides whether the All Mail folder appears in the mail
+	// client. Nil means the bridge keeps whatever it has.
+	//
+	// A pointer rather than a bool with a default, because there is a real
+	// difference between "off" and "not our business". Setting a default here
+	// would overwrite a choice made in Proton's own application on the first
+	// start of this container, and the operator never asked for that.
+	//
+	// The cost is that two containers with the same environment can show
+	// different folder lists, which is why `proton-info` prints the value it
+	// reads back from the bridge. Nobody has to guess which of the two applies.
+	ShowAllMail *bool
+
+	// Telemetry is whether the bridge may report usage data to Proton.
+	//
+	// Off by default, and that is a decision rather than an inherited default.
+	// A container on a server has nobody to ask, and something that reports
+	// back about a mailbox should not start doing so because nobody said
+	// otherwise. Turning it on stays possible, in one place, on purpose.
+	//
+	// Note the inversion against the interface: the bridge exposes
+	// `SetIsTelemetryDisabled`, so this value is negated before it is sent.
+	Telemetry bool
+
 	// PublicIMAPPort and PublicSMTPPort are what the operator published the
 	// mail ports as on the host. Zero when nobody said.
 	//
@@ -133,6 +166,20 @@ func FromEnv() (Config, error) {
 	}
 
 	if config.SetupExpose, err = boolean("BRIDGE_SETUP_EXPOSE", false); err != nil {
+		return Config{}, err
+	}
+
+	if config.AlternativeRouting, err = boolean("BRIDGE_ALTERNATIVE_ROUTING", false); err != nil {
+		return Config{}, err
+	}
+
+	if config.ShowAllMail, err = optionalBoolean("BRIDGE_SHOW_ALL_MAIL"); err != nil {
+		return Config{}, err
+	}
+
+	// Defaults to off. See the field comment: this is a decision, not the
+	// bridge's default carried over.
+	if config.Telemetry, err = boolean("BRIDGE_TELEMETRY", false); err != nil {
 		return Config{}, err
 	}
 
@@ -229,6 +276,24 @@ func boolean(name string, fallback bool) (bool, error) {
 	}
 
 	return value, nil
+}
+
+// optionalBoolean is boolean() with a third state: nil when nobody said.
+//
+// A bad value still fails. "Not set" and "set to something meaningless" are
+// different things, and only the first one means "leave it alone".
+func optionalBoolean(name string) (*bool, error) {
+	raw, ok := os.LookupEnv(name)
+	if !ok || raw == "" {
+		return nil, nil
+	}
+
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s is %q, which is not a truth value; use true or false", name, raw)
+	}
+
+	return &value, nil
 }
 
 func logLevel(name, fallback string) (string, error) {

@@ -136,6 +136,18 @@ func collect(ctx context.Context, client *bridgeclient.Client) (info.Report, err
 		return report, err
 	}
 
+	// Same reasoning: read, not remembered. These survive a restart in the
+	// vault, so the environment this container was started with and what the
+	// bridge currently believes can differ.
+	switches, err := control.ReadSwitches(ctx, client)
+	if err != nil {
+		return report, err
+	}
+
+	report.AlternativeRouting = switches.AlternativeRouting
+	report.ShowAllMail = switches.ShowAllMail
+	report.Telemetry = switches.Telemetry
+
 	users, err := client.GetUserList(ctx, &emptypb.Empty{})
 	if err != nil {
 		return report, fmt.Errorf("could not read the account list: %w", err)
