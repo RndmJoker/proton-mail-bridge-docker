@@ -15,7 +15,7 @@ Early development. This section always states what actually works, not what is p
 | `bridge-control`: gRPC control, environment variables | done |
 | Setup web page and `proton-login` | done |
 | Published images, signed provenance, nightly rebuild | done |
-| Compose example and a walkthrough for a stranger | planned |
+| Compose example and a walkthrough for a stranger | done |
 
 The image builds, the bridge starts, and an account can be signed in. **No test in this repository uses a real Proton account**, so the sign-in itself is exercised by hand rather than by CI. Treat this as early software and keep a copy of anything you care about elsewhere.
 
@@ -56,12 +56,16 @@ The split is deliberate. A reachable vulnerability in our own dependencies is so
 
 ## Where the images are
 
-Two registries, same image, same digest:
+**Nowhere yet.** Nothing is published while the first release is being finished, so everything in this section describes how it will work rather than something you can pull today. [Build it yourself](#building-it-yourself) in the meantime.
+
+Two registries, the same image in both:
 
 ```
 ghcr.io/rndmjoker/proton-mail-bridge-docker
 docker.io/rndmjoker/proton-mail-bridge-docker
 ```
+
+The two currently store it under **different digests**, which is a defect and is being fixed - see [#39](https://github.com/RndmJoker/proton-mail-bridge-docker/issues/39). It matters because a provenance attestation signs a digest, so until it is fixed an attestation can only cover one of the two copies.
 
 | Tag | What it means |
 | :--- | :--- |
@@ -152,6 +156,12 @@ docker run -d --name proton-bridge \
   proton-mail-bridge:local
 ```
 
+Or use [`compose.yaml`](compose.yaml), which does the same with the reasoning written next to each line:
+
+```bash
+docker compose up -d
+```
+
 Then sign in:
 
 ```bash
@@ -161,6 +171,25 @@ docker exec -it proton-bridge proton-login
 It asks for your Proton username and password, then for whatever Proton asks for next: a two-factor code, a separate mailbox password, or a link to open for human verification. Nothing you type is echoed, logged or stored.
 
 Afterwards, `docker exec proton-bridge proton-info` shows the bridge password your mail client needs.
+
+### Setting up the mail client
+
+`proton-info --secrets` prints every value below. What goes where:
+
+| Field | Value |
+| :--- | :--- |
+| Username | your Proton address, the one `proton-info` lists |
+| Password | the **bridge password** from `proton-info --secrets`, not your Proton password |
+| IMAP server | `127.0.0.1`, port `1143` |
+| SMTP server | `127.0.0.1`, port `1025` |
+| Connection security | STARTTLS, unless you set `BRIDGE_IMAP_SSL` / `BRIDGE_SMTP_SSL` |
+| Authentication | normal password |
+
+Three things trip people up here, in order of how often:
+
+- **The certificate is self-signed**, so the client will warn once and ask you to accept it. Compare the fingerprint it shows against the one from `proton-info` before you do. That comparison is the entire security of this step.
+- **The port numbers are the container's own.** If you published them elsewhere - and you must, if Proton's desktop bridge already holds 1143 and 1025 - use the numbers you published, not the ones printed. Setting `BRIDGE_PUBLIC_IMAP_PORT` and `BRIDGE_PUBLIC_SMTP_PORT` makes `proton-info` name yours instead.
+- **In combined mode**, which is Proton's default, one password covers every address on the account. Handing it to someone for one address hands them all of them. `proton-info` says which mode you are in.
 
 ### Signing in through a browser instead
 
