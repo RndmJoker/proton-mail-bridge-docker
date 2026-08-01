@@ -508,20 +508,84 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# The vault key survives a restart
+# What survives a restart
 # --------------------------------------------------------------------------
 
-# Everything above starts from an empty volume, which proves the vault key gets
-# written to the keychain but not that it can be read back. If it could not,
-# the bridge would generate a fresh one on every start and silently drop every
-# signed-in account, while all of the checks above stayed green.
+# Everything above starts from an empty volume, which proves things get written
+# but not that they can be read back. If they could not, the bridge would start
+# from scratch every time and silently drop every signed-in account, while all
+# of the checks above stayed green.
+#
+# This was measured by hand once, on 2026-07-31, against a real account, and it
+# held. A measurement that happened once is not a check: what it does not do is
+# notice the day it stops holding, and the way it would stop is quiet. A volume
+# path that moves, an XDG variable that changes, a base image whose `tini`
+# behaves differently - none of those fail loudly. The mail would simply be
+# downloaded again, which on a large mailbox looks like slowness, not a bug.
+#
+# **What CI cannot show.** Without an account there is no mail, so this covers
+# the vault, the keychain, the certificate and the settings, and not the
+# messages. That part stays a manual check, like the sign-in itself.
 #
 # Kept last on purpose: it stops and starts the container, so anything running
 # after it would be looking at a different process.
 
-log "Vault key after a restart"
+log "What survives a restart"
 
+# Measured inside the container rather than on the host. The files belong to
+# uid 1000 in the container's namespace, which under a rootless engine is some
+# other uid outside it, and a `du` that silently skips unreadable directories
+# would compare two numbers that mean nothing.
+volume_bytes_before="$("$ENGINE" exec "$CONTAINER" du -sb /data 2>/dev/null | cut -f1 || true)"
+volume_files_before="$("$ENGINE" exec "$CONTAINER" sh -c 'find /data -type f | wc -l' 2>/dev/null || true)"
+
+# Asked of the bridge over gRPC, not read back out of the configuration. What
+# matters is what the bridge believes, and reading our own environment back
+# would prove only that a variable is still set.
+info_before="$("$ENGINE" exec "$CONTAINER" proton-info 2>&1 || true)"
+
+# The lines that are settings rather than circumstance. The fingerprint is in
+# here deliberately: a certificate regenerated on restart would mean every mail
+# client warning about a changed identity, and it lives in the same volume.
+settings_of() {
+    printf '%s\n' "$1" | grep -E 'IMAP|SMTP|Fingerprint|self-update|Connection' || true
+}
+
+settings_before="$(settings_of "$info_before")"
+
+if [ -z "$volume_bytes_before" ] || [ "$volume_bytes_before" -eq 0 ] 2>/dev/null; then
+    fail "could not measure the volume before the restart, so the comparison below means nothing"
+fi
+
+if [ -z "$settings_before" ]; then
+    fail "proton-info printed no settings before the restart, so the comparison below means nothing"
+fi
+
+# The stop is a measurement of its own. `tini` is PID 1 and its job is to pass
+# the signal on; if it did not, the engine would wait out its timeout and kill
+# the container, and the exit code would be 137 rather than 0. A vault written
+# by a killed process is a vault nobody should trust.
+stop_started="$(date +%s)"
 "$ENGINE" stop -t 10 "$CONTAINER" >/dev/null 2>&1 || true
+stop_seconds=$(( $(date +%s) - stop_started ))
+
+stop_code="$("$ENGINE" inspect -f '{{.State.ExitCode}}' "$CONTAINER" 2>/dev/null || echo "?")"
+
+if [ "$stop_code" = "0" ]; then
+    ok "stopped cleanly, exit code 0"
+else
+    fail "exit code $stop_code after a stop, so something was killed rather than asked to leave"
+fi
+
+# Well above the 0.27 s measured by hand and well below the engine's 10 s
+# timeout, so this fails on "the signal was not passed on" and not on a slow
+# runner.
+if [ "$stop_seconds" -le 5 ]; then
+    ok "stopped within ${stop_seconds}s"
+else
+    fail "took ${stop_seconds}s to stop; tini is not passing the signal on, or something is ignoring it"
+fi
+
 "$ENGINE" start "$CONTAINER" >/dev/null 2>&1 || true
 
 # Twice: once from the first start, once from this one.
@@ -531,6 +595,33 @@ if [ "$("$ENGINE" inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" = "
     ok "still running after a restart"
 else
     fail "did not come back up after a restart"
+fi
+
+volume_bytes_after="$("$ENGINE" exec "$CONTAINER" du -sb /data 2>/dev/null | cut -f1 || true)"
+volume_files_after="$("$ENGINE" exec "$CONTAINER" sh -c 'find /data -type f | wc -l' 2>/dev/null || true)"
+
+# Not equality. A restart legitimately writes logs and touches the vault, so
+# the volume grows; what must never happen is that it shrinks, because that is
+# what losing a keychain, a vault or a certificate looks like from outside.
+if [ -n "$volume_bytes_after" ] && [ "$volume_bytes_after" -ge "$volume_bytes_before" ] 2>/dev/null; then
+    ok "the volume did not shrink (${volume_bytes_before} -> ${volume_bytes_after} bytes)"
+else
+    fail "the volume shrank across a restart (${volume_bytes_before} -> ${volume_bytes_after} bytes), so something in it was lost"
+fi
+
+if [ -n "$volume_files_after" ] && [ "$volume_files_after" -ge "$volume_files_before" ] 2>/dev/null; then
+    ok "no files disappeared (${volume_files_before} -> ${volume_files_after})"
+else
+    fail "files disappeared across a restart (${volume_files_before} -> ${volume_files_after})"
+fi
+
+settings_after="$(settings_of "$("$ENGINE" exec "$CONTAINER" proton-info 2>&1 || true)")"
+
+if [ "$settings_before" = "$settings_after" ]; then
+    ok "ports, TLS mode, certificate fingerprint and the update setting are unchanged"
+else
+    fail "the bridge reports different settings after a restart:
+$(diff <(printf '%s\n' "$settings_before") <(printf '%s\n' "$settings_after") || true)"
 fi
 
 # The log line belongs to the bridge, not to us, so a rewording upstream would
