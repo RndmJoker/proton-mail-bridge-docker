@@ -1,25 +1,52 @@
 name: Publish
 
-# Publishing happens on three occasions and no others.
+# Publishing happens on two occasions and no others.
 #
-#   - A version tag. Tags are created and signed on a workstation, never here,
-#     so this only ever runs on something that went through a pull request.
+#   - By hand, naming what to build. This is a decision, so somebody makes it.
 #   - Once a night. The bridge is pinned to a commit hash, so the same source
 #     is rebuilt on a newer Debian base: this is how security updates reach a
 #     published image between two releases, which was six weeks last time.
-#   - By hand, for whatever falls between the two.
 #
 # Deliberately not on every push to main. The build takes the better part of an
 # hour and a change to the readme has no business starting one.
 #
-# A new upstream bridge release does NOT trigger a build. That is
+# ## Why tagging no longer triggers this, which it used to
+#
+# A workflow run uses the workflow file as it exists at the git ref of the
+# triggering event. For a tag push that is the tagged commit, so a guard added
+# to this file on main does not apply to a tag placed on an older commit. On
+# 2026-07-31 that published two unfinished builds to two public registries
+# (#40), because `PUBLISH=no` had been merged and the tags predated it.
+#
+# The lesson was not that the guard was in the wrong place. It was that tagging
+# had a side effect at all. A tag is bookkeeping - it records that a version
+# existed. Publishing is a decision. Coupling the two meant the decision got
+# made by whoever ran `git push --tags`, which is not how it should be.
+#
+# So: `push: tags` is gone. Nothing about creating a tag reaches this file.
+# What to build is an input, and the run is started on the default branch, so
+# the workflow code always comes from main while the build contents come from
+# wherever the input points.
+#
+# Tags on commits that predate this change still carry their own copy of the
+# old trigger, and nothing here can reach those. That gap is covered outside
+# GitHub, in tag-release.sh, which is the one place that sees both the target
+# commit and main. See git-workflow.md in the rules repository.
+#
+# A new upstream bridge release does NOT trigger a build either. That is
 # .github/workflows/upstream.yml, and all it does is file an issue: what Proton
 # changed gets looked at by a person before anything is published under this
 # name.
 
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: >-
+          Tag or commit to build and publish. Empty builds the branch this run
+          was started on.
+        required: false
+        type: string
   schedule:
     # Off the hour on purpose. Scheduled runs across GitHub queue at :00, and a
     # job placed there is regularly delayed by ten minutes or more.
@@ -31,7 +58,6 @@ on:
     # activity in the repository. A quiet stretch that long stops the rebuild
     # without saying so.
     - cron: '23 3 * * *'
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -61,6 +87,29 @@ jobs:
     outputs:
       enabled: ${{ steps.check.outputs.enabled }}
     steps:
+      # Fails the run rather than skipping it, unlike the PUBLISH check below.
+      # A `no` in PUBLISH is an intended state that recurs nightly; being
+      # started on the wrong ref is a mistake that happens once and has to be
+      # seen.
+      #
+      # Why it matters: a run started on a tag would read this file from that
+      # tag, which is exactly the situation #40 was about. What to build is an
+      # input; where the workflow comes from is not negotiable.
+      - name: This has to run on the default branch
+        env:
+          STARTED_ON: ${{ github.ref }}
+          DEFAULT_BRANCH: refs/heads/${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$STARTED_ON" != "$DEFAULT_BRANCH" ]; then
+            echo "::error::Started on $STARTED_ON, which is not $DEFAULT_BRANCH."
+            echo "::error::The workflow file must come from the default branch, or a guard added there does not apply."
+            echo "::error::To build a tag, start this on the default branch and name the tag in the 'ref' input."
+            exit 1
+          fi
+
+      # No `ref:`. This job reads PUBLISH from the default branch on purpose:
+      # whether this project publishes at all is a decision about now, not a
+      # property of whatever old commit is being built.
       - uses: actions/checkout@v4
 
       - name: Read the PUBLISH file
@@ -87,7 +136,30 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      # Here the ref does apply: this is the source that gets built. The
+      # workflow file has already been fixed to the default branch by the time
+      # this runs, so the two cannot be confused.
+      #
+      # On a scheduled run there is no input and this is the default branch,
+      # which is what the nightly rebuild is for.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: What is being built
+        env:
+          BUILD_REF: ${{ inputs.ref || github.ref }}
+        run: |
+          echo "Workflow file from: ${{ github.ref }}"
+          echo "Source built:       $BUILD_REF -> $(git rev-parse HEAD)"
+          {
+            echo "### Building"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Workflow file from | \`${{ github.ref }}\` |"
+            echo "| Source built | \`$BUILD_REF\` (\`$(git rev-parse HEAD)\`) |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Which builder is in use
         run: bash scripts/ci/check-builder.sh

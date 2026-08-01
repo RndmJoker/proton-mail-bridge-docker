@@ -274,9 +274,19 @@ git verify-tag v0.1.0
 
 Tags are created locally rather than by CI, because the GitHub API can create tags but cannot sign them. A repository rule rejects any tag without a valid signature.
 
-Pushing such a tag is also what publishes an image, when publishing is on at all. Nothing reaches a registry that did not come through a pull request, pass the smoke test in the same run, and get its provenance signed. See [Where the images are](#where-the-images-are).
+**A tag publishes nothing.** It records that a version existed, and that is all it does. Publishing is started deliberately, naming what to build, or it happens as the nightly rebuild of whatever is on `main`. Nothing reaches a registry that did not come through a pull request, pass the smoke test in the same run, and get its provenance signed. See [Where the images are](#where-the-images-are).
 
-**Whether anything may be published is decided in the [`PUBLISH`](PUBLISH) file**, not in a settings page. While it says `no` the publish job is skipped, so a tag records a version and nothing more. The file says why it is where it is.
+It used to work the other way, and that is worth saying plainly: pushing a tag published an image. On 2026-07-31 two tags were added to older commits to complete the record, and both published, because a workflow run uses the workflow file as it was at the tagged commit - so the `PUBLISH=no` that had since been merged did not apply to them. Two unfinished builds were publicly pullable for about 45 minutes before they were deleted. Nothing was leaked; the image holds no secrets. What was wrong is that nobody decided it. See [#40](https://github.com/RndmJoker/proton-mail-bridge-docker/issues/40).
+
+**Whether anything may be published is decided in the [`PUBLISH`](PUBLISH) file**, not in a settings page. While it says `no` the publish job is skipped. The file says why it is where it is.
+
+Publishing a particular version, once `PUBLISH` allows it:
+
+```bash
+gh workflow run publish.yml --ref main -f ref=v0.6.0
+```
+
+Started on `main` so the workflow file comes from there, building whatever `ref` names. The run refuses to start on any other branch, because a run started on a tag would read the workflow - guards included - from that tag.
 
 A new upstream bridge release does **not** publish anything by itself. A scheduled check notices it and files an issue; what Proton changed is looked at by a person before it goes out under this name.
 

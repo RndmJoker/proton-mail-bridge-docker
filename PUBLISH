@@ -1,10 +1,14 @@
 # Whether the publish workflow may push anything to a registry.
 #
 # This exists because a tag stopped being bookkeeping and became a release.
-# .github/workflows/publish.yml fires on a version tag and once a night, so
-# from the moment it reached main, tagging and doing nothing at all both
-# publish an image. That is fine when the thing is ready and wrong before it
-# is, and nothing in the repository said which of the two applied.
+# .github/workflows/publish.yml used to fire on a version tag, so from the
+# moment it reached main, tagging and doing nothing at all both published an
+# image. That is fine when the thing is ready and wrong before it is, and
+# nothing in the repository said which of the two applied.
+#
+# The tag trigger is gone since #40 - publishing is now started by hand or by
+# the nightly rebuild - but this file stays, because the nightly rebuild is
+# still a thing that happens without anyone deciding it that night.
 #
 # A repository setting would have done the job too, and was in fact used for
 # one evening. What it cannot do is show up in a diff. Turning publishing on
