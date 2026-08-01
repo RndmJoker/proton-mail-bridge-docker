@@ -243,3 +243,64 @@ func TestFormatWarnsAboutThePassword(t *testing.T) {
 		t.Errorf("there is no warning about sharing it:\n%s", out)
 	}
 }
+
+// TestFormatShowsTheThreeSwitches is #23.
+//
+// All three are read from the bridge rather than echoed from the environment,
+// and the report has to say so: they live in the vault and survive restarts, so
+// removing a variable from the compose file does not undo what it set. Somebody
+// wondering why All Mail is still there needs that sentence.
+func TestFormatShowsTheThreeSwitches(t *testing.T) {
+	report := exampleReport()
+
+	out := Format(report)
+
+	for _, want := range []string{
+		"Alternative routing    off",
+		"Show All Mail          off",
+		"Usage diagnostics      off",
+		"Read from the bridge",
+		"survive restarts",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("%q is missing from the output:\n%s", want, out)
+		}
+	}
+
+	report.AlternativeRouting = true
+	report.ShowAllMail = true
+
+	out = Format(report)
+
+	if !strings.Contains(out, "Alternative routing    ON") {
+		t.Error("alternative routing is not shown as on")
+	}
+
+	if !strings.Contains(out, "Show All Mail          ON") {
+		t.Error("All Mail is not shown as on")
+	}
+}
+
+// Telemetry on is worth a sentence rather than a word. This container turns it
+// off, so seeing it on means either somebody set the variable or it was turned
+// on in Proton's own application against the same vault - and the reader should
+// not have to work out which possibilities exist.
+func TestFormatExplainsTelemetryBeingOn(t *testing.T) {
+	report := exampleReport()
+
+	if strings.Contains(Format(report), "Usage diagnostics are ON") {
+		t.Fatal("the explanation appears with telemetry off, so it says nothing")
+	}
+
+	report.Telemetry = true
+
+	out := Format(report)
+
+	if !strings.Contains(out, "Usage diagnostics      ON") {
+		t.Error("telemetry is not shown as on")
+	}
+
+	if !strings.Contains(out, "BRIDGE_TELEMETRY=true") {
+		t.Error("nothing says how it might have been turned on")
+	}
+}

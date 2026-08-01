@@ -201,3 +201,77 @@ func TestFromEnvTreatsEmptyAsUnset(t *testing.T) {
 		t.Fatalf("empty values did not fall back to the defaults: %+v", config)
 	}
 }
+
+// TestOptionalBooleanHasThreeStates is why ShowAllMail is a pointer.
+//
+// Unset and "set to something meaningless" are different: only the first means
+// leave it alone. A version of this that treated a typo as unset would silently
+// ignore BRIDGE_SHOW_ALL_MAIL=ture.
+func TestOptionalBooleanHasThreeStates(t *testing.T) {
+	t.Setenv("BRIDGE_SHOW_ALL_MAIL", "")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+
+	if cfg.ShowAllMail != nil {
+		t.Errorf("an unset variable produced %v, want nil", *cfg.ShowAllMail)
+	}
+
+	for _, tc := range []struct {
+		raw  string
+		want bool
+	}{
+		{"true", true},
+		{"false", false},
+	} {
+		t.Setenv("BRIDGE_SHOW_ALL_MAIL", tc.raw)
+
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv with %q: %v", tc.raw, err)
+		}
+
+		if cfg.ShowAllMail == nil {
+			t.Fatalf("%q produced nil", tc.raw)
+		}
+
+		if *cfg.ShowAllMail != tc.want {
+			t.Errorf("%q produced %v, want %v", tc.raw, *cfg.ShowAllMail, tc.want)
+		}
+	}
+
+	t.Setenv("BRIDGE_SHOW_ALL_MAIL", "ture")
+
+	if _, err := FromEnv(); err == nil {
+		t.Error("a typo was accepted; it would have been silently ignored")
+	}
+}
+
+// Telemetry defaults to off, and that is the whole point of the setting.
+func TestTelemetryDefaultsOff(t *testing.T) {
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+
+	if cfg.Telemetry {
+		t.Error("telemetry defaults to on")
+	}
+
+	if cfg.AlternativeRouting {
+		t.Error("alternative routing defaults to on")
+	}
+
+	t.Setenv("BRIDGE_TELEMETRY", "true")
+
+	cfg, err = FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+
+	if !cfg.Telemetry {
+		t.Error("BRIDGE_TELEMETRY=true was not read, so the default above proves nothing")
+	}
+}

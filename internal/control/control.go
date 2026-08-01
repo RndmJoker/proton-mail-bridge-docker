@@ -38,7 +38,93 @@ func Apply(ctx context.Context, client bridgepb.BridgeClient, cfg config.Config)
 		return err
 	}
 
-	return setMailServerSettings(ctx, client, cfg)
+	if err := setMailServerSettings(ctx, client, cfg); err != nil {
+		return err
+	}
+
+	return applySwitches(ctx, client, cfg)
+}
+
+// applySwitches sets the three plain on/off settings and reads each one back.
+//
+// Read back for the same reason as the updater above: these live in the vault,
+// and a write that failed silently would leave a container running for months
+// with a log claiming the opposite. That is worse for these than for a port,
+// because a wrong port is noticed immediately by a mail client and a bridge
+// still reporting telemetry is noticed by nobody.
+func applySwitches(ctx context.Context, client bridgepb.BridgeClient, cfg config.Config) error {
+	if err := setAndVerify(ctx, "alternative routing", cfg.AlternativeRouting,
+		func(v *wrapperspb.BoolValue) error {
+			_, err := client.SetIsDoHEnabled(ctx, v)
+			return err
+		},
+		func() (bool, error) {
+			state, err := client.IsDoHEnabled(ctx, &emptypb.Empty{})
+			return state.GetValue(), err
+		}); err != nil {
+		return err
+	}
+
+	// Telemetry is inverted against the interface, which offers
+	// `IsTelemetryDisabled`. Getting this backwards would turn reporting on
+	// for everyone who left the variable alone, so both directions are
+	// asserted in control_test.go.
+	if err := setAndVerify(ctx, "telemetry", cfg.Telemetry,
+		func(v *wrapperspb.BoolValue) error {
+			_, err := client.SetIsTelemetryDisabled(ctx, wrapperspb.Bool(!v.GetValue()))
+			return err
+		},
+		func() (bool, error) {
+			state, err := client.IsTelemetryDisabled(ctx, &emptypb.Empty{})
+			return !state.GetValue(), err
+		}); err != nil {
+		return err
+	}
+
+	// Nil means nobody said, and then the bridge keeps what it has. Writing a
+	// default here would silently overwrite a choice made in Proton's own
+	// application the first time this container starts.
+	if cfg.ShowAllMail == nil {
+		return nil
+	}
+
+	return setAndVerify(ctx, "All Mail visibility", *cfg.ShowAllMail,
+		func(v *wrapperspb.BoolValue) error {
+			_, err := client.SetIsAllMailVisible(ctx, v)
+			return err
+		},
+		func() (bool, error) {
+			state, err := client.IsAllMailVisible(ctx, &emptypb.Empty{})
+			return state.GetValue(), err
+		})
+}
+
+// setAndVerify writes a boolean setting and confirms the bridge kept it.
+//
+// The three settings differ only in which pair of calls they use, so the
+// sequence lives here once. A version of this that only wrote would be three
+// lines shorter and would prove nothing.
+func setAndVerify(
+	ctx context.Context,
+	what string,
+	want bool,
+	set func(*wrapperspb.BoolValue) error,
+	get func() (bool, error),
+) error {
+	if err := set(wrapperspb.Bool(want)); err != nil {
+		return fmt.Errorf("could not set %s to %t: %w", what, want, err)
+	}
+
+	got, err := get()
+	if err != nil {
+		return fmt.Errorf("could not read %s back: %w", what, err)
+	}
+
+	if got != want {
+		return fmt.Errorf("%s is %t after being set to %t; the bridge did not keep the setting", what, got, want)
+	}
+
+	return nil
 }
 
 // disableAutomaticUpdates turns off the bridge's own updater and reads the
@@ -103,6 +189,47 @@ func setMailServerSettings(ctx context.Context, client bridgepb.BridgeClient, cf
 	}
 
 	return nil
+}
+
+// Switches is the current state of the three plain settings.
+type Switches struct {
+	AlternativeRouting bool
+	ShowAllMail        bool
+	Telemetry          bool
+}
+
+// ReadSwitches asks the bridge what the three settings are right now.
+//
+// Read rather than remembered, like AutomaticUpdatesOn: proton-info runs days
+// after the container started, against a bridge nothing in that process
+// configured, and after a restart in which BRIDGE_SHOW_ALL_MAIL may have been
+// removed from the environment without the vault forgetting the value.
+func ReadSwitches(ctx context.Context, client bridgepb.BridgeClient) (Switches, error) {
+	var s Switches
+
+	doh, err := client.IsDoHEnabled(ctx, &emptypb.Empty{})
+	if err != nil {
+		return s, fmt.Errorf("could not read the alternative routing setting: %w", err)
+	}
+
+	s.AlternativeRouting = doh.GetValue()
+
+	allMail, err := client.IsAllMailVisible(ctx, &emptypb.Empty{})
+	if err != nil {
+		return s, fmt.Errorf("could not read the All Mail setting: %w", err)
+	}
+
+	s.ShowAllMail = allMail.GetValue()
+
+	// Inverted, as in applySwitches.
+	disabled, err := client.IsTelemetryDisabled(ctx, &emptypb.Empty{})
+	if err != nil {
+		return s, fmt.Errorf("could not read the telemetry setting: %w", err)
+	}
+
+	s.Telemetry = !disabled.GetValue()
+
+	return s, nil
 }
 
 // Version asks the bridge what it is.

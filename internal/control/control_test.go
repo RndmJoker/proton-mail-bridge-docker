@@ -32,6 +32,26 @@ type stubClient struct {
 
 	mailServerSettings *bridgepb.ImapSmtpSettings
 
+	// The three plain switches. Each starts at the bridge's own default for a
+	// fresh vault, so a test that never sets one is not looking at a value it
+	// happens to agree with.
+	//
+	// telemetryDisabled is stored the way the interface names it, inverted
+	// against the configuration. Keeping the stub honest about that is the
+	// point: if the production code and the stub both flipped it, the test
+	// would pass with reporting switched on for everyone.
+	doh               bool
+	allMailVisible    bool
+	telemetryDisabled bool
+
+	// swallowSwitch is swallowSet for the three above.
+	swallowSwitch bool
+
+	dohErr       error
+	dohGetErr    error
+	allMailErr   error
+	telemetryErr error
+
 	updateErr    error
 	updateGetErr error
 	settingsErr  error
@@ -39,7 +59,62 @@ type stubClient struct {
 }
 
 func newStub() *stubClient {
-	return &stubClient{automaticUpdate: true}
+	// allMailVisible true and telemetryDisabled false are the bridge's own
+	// defaults. Telemetry therefore starts *enabled*, which is exactly the
+	// state this container is supposed to change.
+	return &stubClient{automaticUpdate: true, allMailVisible: true}
+}
+
+func (s *stubClient) SetIsDoHEnabled(_ context.Context, in *wrapperspb.BoolValue, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+	if s.dohErr != nil {
+		return nil, s.dohErr
+	}
+
+	if !s.swallowSwitch {
+		s.doh = in.GetValue()
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+func (s *stubClient) IsDoHEnabled(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*wrapperspb.BoolValue, error) {
+	if s.dohGetErr != nil {
+		return nil, s.dohGetErr
+	}
+
+	return wrapperspb.Bool(s.doh), nil
+}
+
+func (s *stubClient) SetIsAllMailVisible(_ context.Context, in *wrapperspb.BoolValue, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+	if s.allMailErr != nil {
+		return nil, s.allMailErr
+	}
+
+	if !s.swallowSwitch {
+		s.allMailVisible = in.GetValue()
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+func (s *stubClient) IsAllMailVisible(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*wrapperspb.BoolValue, error) {
+	return wrapperspb.Bool(s.allMailVisible), nil
+}
+
+func (s *stubClient) SetIsTelemetryDisabled(_ context.Context, in *wrapperspb.BoolValue, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+	if s.telemetryErr != nil {
+		return nil, s.telemetryErr
+	}
+
+	if !s.swallowSwitch {
+		s.telemetryDisabled = in.GetValue()
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+func (s *stubClient) IsTelemetryDisabled(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*wrapperspb.BoolValue, error) {
+	return wrapperspb.Bool(s.telemetryDisabled), nil
 }
 
 func (s *stubClient) SetIsAutomaticUpdateOn(_ context.Context, in *wrapperspb.BoolValue, _ ...grpc.CallOption) (*emptypb.Empty, error) {
@@ -239,5 +314,163 @@ func TestVersion(t *testing.T) {
 func TestVersionReportsAFailure(t *testing.T) {
 	if _, err := Version(context.Background(), &stubClient{versionErr: errors.New("unauthenticated")}); err == nil {
 		t.Fatal("expected an error, got none")
+	}
+}
+
+// TestTelemetryIsInverted is the one that matters most in this file.
+//
+// The interface offers SetIsTelemetryDisabled, the configuration offers
+// BRIDGE_TELEMETRY, and the two mean opposite things. Getting it backwards
+// would switch reporting *on* for everyone who left the variable alone, and
+// nothing else here would notice: the container would start, the mail would
+// flow, and the log would say nothing.
+func TestTelemetryIsInverted(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		telemetry    bool
+		wantDisabled bool
+	}{
+		{"default off means disabled true", false, true},
+		{"explicitly on means disabled false", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := newStub()
+
+			if err := Apply(context.Background(), stub, config.Config{Telemetry: tc.telemetry}); err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+
+			if stub.telemetryDisabled != tc.wantDisabled {
+				t.Errorf("BRIDGE_TELEMETRY=%t left IsTelemetryDisabled=%t, want %t",
+					tc.telemetry, stub.telemetryDisabled, tc.wantDisabled)
+			}
+		})
+	}
+}
+
+// The default has to be reached without anyone setting anything, because that
+// is the case it exists for. A zero Config is what a container with no
+// BRIDGE_TELEMETRY in its environment produces.
+func TestTelemetryIsOffWithoutBeingAsked(t *testing.T) {
+	stub := newStub()
+
+	// The bridge's own default: reporting enabled.
+	if stub.telemetryDisabled {
+		t.Fatal("the stub starts with telemetry already disabled, so this test cannot fail")
+	}
+
+	if err := Apply(context.Background(), stub, config.Config{}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	if !stub.telemetryDisabled {
+		t.Error("an empty configuration left telemetry enabled")
+	}
+}
+
+func TestAlternativeRoutingIsApplied(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		stub := newStub()
+		stub.doh = !want // so that "unchanged" cannot pass
+
+		if err := Apply(context.Background(), stub, config.Config{AlternativeRouting: want}); err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+
+		if stub.doh != want {
+			t.Errorf("alternative routing is %t, want %t", stub.doh, want)
+		}
+	}
+}
+
+// TestShowAllMailUnsetChangesNothing is the reason ShowAllMail is a pointer.
+//
+// Nil has to mean "not our business". A default here would overwrite whatever
+// was chosen in Proton's own application, the first time this container starts
+// against an existing vault, with nobody having asked for it.
+func TestShowAllMailUnsetChangesNothing(t *testing.T) {
+	for _, existing := range []bool{true, false} {
+		stub := newStub()
+		stub.allMailVisible = existing
+
+		if err := Apply(context.Background(), stub, config.Config{}); err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+
+		if stub.allMailVisible != existing {
+			t.Errorf("an unset BRIDGE_SHOW_ALL_MAIL changed All Mail from %t to %t", existing, stub.allMailVisible)
+		}
+	}
+}
+
+func TestShowAllMailIsAppliedWhenSet(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		stub := newStub()
+		stub.allMailVisible = !want
+
+		if err := Apply(context.Background(), stub, config.Config{ShowAllMail: &want}); err != nil {
+			t.Fatalf("Apply: %v", err)
+		}
+
+		if stub.allMailVisible != want {
+			t.Errorf("All Mail is %t, want %t", stub.allMailVisible, want)
+		}
+	}
+}
+
+// A write the bridge accepts and then ignores has to fail here, for the same
+// reason the updater check does: the setting lives in the vault, and a silent
+// failure would leave a container running for months with the log claiming the
+// opposite.
+func TestApplyFailsWhenASwitchDoesNotStick(t *testing.T) {
+	stub := newStub()
+	stub.swallowSwitch = true
+
+	if err := Apply(context.Background(), stub, config.Config{AlternativeRouting: true}); err == nil {
+		t.Error("Apply succeeded although the bridge kept none of the switches")
+	}
+}
+
+func TestApplyFailsWhenASwitchCannotBeSet(t *testing.T) {
+	stub := newStub()
+	stub.dohErr = errors.New("nope")
+
+	if err := Apply(context.Background(), stub, config.Config{}); err == nil {
+		t.Error("Apply succeeded although setting alternative routing failed")
+	}
+}
+
+func TestApplyFailsWhenASwitchCannotBeReadBack(t *testing.T) {
+	stub := newStub()
+	stub.dohGetErr = errors.New("nope")
+
+	if err := Apply(context.Background(), stub, config.Config{}); err == nil {
+		t.Error("Apply succeeded although the switch could not be read back")
+	}
+}
+
+// ReadSwitches has to undo the inversion too, or proton-info would report the
+// opposite of the truth to somebody checking whether telemetry is off.
+func TestReadSwitchesUndoesTheInversion(t *testing.T) {
+	stub := newStub()
+	stub.telemetryDisabled = true
+	stub.doh = true
+	stub.allMailVisible = false
+
+	got, err := ReadSwitches(context.Background(), stub)
+	if err != nil {
+		t.Fatalf("ReadSwitches: %v", err)
+	}
+
+	if got.Telemetry {
+		t.Error("telemetry reported as on although the bridge has it disabled")
+	}
+
+	if !got.AlternativeRouting {
+		t.Error("alternative routing reported as off although it is on")
+	}
+
+	if got.ShowAllMail {
+		t.Error("All Mail reported as visible although it is not")
 	}
 }

@@ -92,7 +92,7 @@ wait_ready() {
 
 cleanup() {
     local name
-    for name in "$CONTAINER" "$CONTAINER-alt" "$CONTAINER-plain" "$CONTAINER-configured" "$CONTAINER-exposed" "$CONTAINER-closed"; do
+    for name in "$CONTAINER" "$CONTAINER-alt" "$CONTAINER-plain" "$CONTAINER-configured" "$CONTAINER-exposed" "$CONTAINER-closed" "$CONTAINER-switches"; do
         "$ENGINE" rm -f "$name" >/dev/null 2>&1 || true
     done
 
@@ -101,7 +101,7 @@ cleanup() {
     # then stops the host user from deleting any of it. So a throwaway
     # container empties each directory first.
     local dir
-    for dir in "${volume_dir:-}" "${update_volume_dir:-}"; do
+    for dir in "${volume_dir:-}" "${update_volume_dir:-}" "${switch_volume_dir:-}"; do
         [ -n "$dir" ] || continue
 
         "$ENGINE" run --rm --user 0 -v "$dir:/data:Z" \
@@ -796,6 +796,92 @@ if printf '%s\n' "$alt_info" | grep -q 'not what the container measured'; then
 else
     fail "the published port is presented as though the container found it out"
 fi
+
+# --------------------------------------------------------------------------
+# The three plain switches take effect, and telemetry is off by default
+# --------------------------------------------------------------------------
+
+# Same argument as the port check above: the bridge has its own defaults, so a
+# check that only reads them back would pass whether or not the container
+# applied anything. Each value is therefore asked for as the opposite of the
+# bridge's own default, and then read back out of the bridge.
+#
+# Telemetry is the one worth having. The interface offers
+# SetIsTelemetryDisabled while the variable is BRIDGE_TELEMETRY, so the value
+# is negated on the way in. Getting that backwards would switch reporting on
+# for everyone who left the variable alone, and nothing about a running
+# container would look wrong. The unit tests cover the inversion; this covers
+# the whole path through a real bridge.
+
+log "Bridge settings"
+
+readonly SWITCH_CONTAINER="$CONTAINER-switches"
+switch_volume_dir="$(mktemp -d)"
+chmod 0777 "$switch_volume_dir"
+
+"$ENGINE" run -d \
+    --name "$SWITCH_CONTAINER" \
+    -v "$switch_volume_dir:/data:Z" \
+    -e "BRIDGE_ALTERNATIVE_ROUTING=true" \
+    -e "BRIDGE_SHOW_ALL_MAIL=false" \
+    "$IMAGE" >/dev/null
+
+wait_ready "$SWITCH_CONTAINER" || fail "the switch container was not ready within ${READY_TIMEOUT}s"
+
+switch_info="$("$ENGINE" exec "$SWITCH_CONTAINER" proton-info 2>&1 || true)"
+
+# Asked for as true, and the bridge's own default is false.
+if printf '%s' "$switch_info" | grep -q 'Alternative routing    ON'; then
+    ok "BRIDGE_ALTERNATIVE_ROUTING=true reached the bridge"
+else
+    fail "alternative routing did not take: $(printf '%s' "$switch_info" | grep -i 'Alternative routing' || echo 'no such line')"
+fi
+
+# Asked for as false, and the bridge's own default is true.
+if printf '%s' "$switch_info" | grep -q 'Show All Mail          off'; then
+    ok "BRIDGE_SHOW_ALL_MAIL=false reached the bridge"
+else
+    fail "All Mail did not take: $(printf '%s' "$switch_info" | grep -i 'Show All Mail' || echo 'no such line')"
+fi
+
+# Nobody set BRIDGE_TELEMETRY on this container. The bridge reports by
+# default, so "off" here can only come from this container deciding it.
+if printf '%s' "$switch_info" | grep -q 'Usage diagnostics      off'; then
+    ok "telemetry is off although nobody asked for it, which is the default this container makes"
+else
+    fail "telemetry is not off by default: $(printf '%s' "$switch_info" | grep -i 'Usage diagnostics' || echo 'no such line')"
+fi
+
+# The other direction, so that "off" above is not simply what this container
+# always prints.
+"$ENGINE" rm -f "$SWITCH_CONTAINER" >/dev/null 2>&1 || true
+
+"$ENGINE" run -d \
+    --name "$SWITCH_CONTAINER" \
+    -v "$switch_volume_dir:/data:Z" \
+    -e "BRIDGE_TELEMETRY=true" \
+    "$IMAGE" >/dev/null
+
+wait_ready "$SWITCH_CONTAINER" 2 || fail "the switch container was not ready again within ${READY_TIMEOUT}s"
+
+telemetry_info="$("$ENGINE" exec "$SWITCH_CONTAINER" proton-info 2>&1 || true)"
+
+if printf '%s' "$telemetry_info" | grep -q 'Usage diagnostics      ON'; then
+    ok "BRIDGE_TELEMETRY=true turns reporting on, so the check above measures something"
+else
+    fail "telemetry stayed off although it was asked for: $(printf '%s' "$telemetry_info" | grep -i 'Usage diagnostics' || echo 'no such line')"
+fi
+
+# Unset on this run, and the value must survive from the run before it: these
+# live in the vault, which is what the readme tells people.
+if printf '%s' "$telemetry_info" | grep -q 'Alternative routing    ON'; then
+    ok "a setting from the previous run survived in the vault"
+else
+    fail "alternative routing was lost when the variable was removed, which contradicts the readme"
+fi
+
+"$ENGINE" rm -f "$SWITCH_CONTAINER" >/dev/null 2>&1 || true
+rm -rf "$switch_volume_dir" 2>/dev/null || true
 
 # --------------------------------------------------------------------------
 # The exposed sign-in page is guarded

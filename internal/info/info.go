@@ -66,6 +66,15 @@ type Report struct {
 	// actually running.
 	AutomaticUpdates bool
 
+	// AlternativeRouting, ShowAllMail and Telemetry are the three plain
+	// settings, read back from the bridge rather than echoed from the
+	// environment. They live in the vault and survive restarts, so what this
+	// container was configured with and what the bridge currently believes are
+	// two different questions.
+	AlternativeRouting bool
+	ShowAllMail        bool
+	Telemetry          bool
+
 	Accounts []Account
 }
 
@@ -184,6 +193,25 @@ func Format(report Report) string {
 		b.WriteString("  own binary.\n")
 	}
 
+	b.WriteString("\nSettings\n")
+	fmt.Fprintf(&b, "  Alternative routing    %s\n", onOff(report.AlternativeRouting))
+	fmt.Fprintf(&b, "  Show All Mail          %s\n", onOff(report.ShowAllMail))
+	fmt.Fprintf(&b, "  Usage diagnostics      %s\n", onOff(report.Telemetry))
+
+	// Read from the bridge, not from our own environment, and that difference
+	// is worth stating. These live in the vault and survive a restart, so a
+	// variable removed from the compose file does not undo what it once set.
+	// Somebody looking for why All Mail is still there needs to know that.
+	b.WriteString("\n  Read from the bridge, not from this container's environment. They live\n")
+	b.WriteString("  in the vault and survive restarts, so removing BRIDGE_SHOW_ALL_MAIL does\n")
+	b.WriteString("  not undo what it set - change the value instead.\n")
+
+	if report.Telemetry {
+		b.WriteString("\n  Usage diagnostics are ON. This container defaults them off; something\n")
+		b.WriteString("  set BRIDGE_TELEMETRY=true, or they were turned on in Proton's own\n")
+		b.WriteString("  application against this vault.\n")
+	}
+
 	b.WriteString("\nAccounts\n")
 
 	if len(report.Accounts) == 0 {
@@ -213,4 +241,14 @@ func Format(report Report) string {
 	}
 
 	return b.String()
+}
+
+// onOff names a boolean the way the rest of this report does: a capitalised ON
+// for the state worth noticing, lower case for the quiet one.
+func onOff(v bool) string {
+	if v {
+		return "ON"
+	}
+
+	return "off"
 }

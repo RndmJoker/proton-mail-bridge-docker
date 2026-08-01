@@ -278,6 +278,22 @@ docker run -v /your/path:/data:Z ...   # SELinux hosts, Fedora and RHEL among th
 
 Without the `:Z` the container is denied access on an enforcing system, and the entrypoint stops with an explanation rather than failing somewhere deeper.
 
+### Bridge settings
+
+Three switches the bridge has, applied at every start and read back afterwards. If one does not stick, the container stops rather than running in a state its log does not describe.
+
+| Variable | Default | What it does |
+| :--- | :--- | :--- |
+| `BRIDGE_ALTERNATIVE_ROUTING` | `false` | reach Proton over DNS-over-HTTPS when the normal API is blocked |
+| `BRIDGE_TELEMETRY` | `false` | report usage diagnostics to Proton |
+| `BRIDGE_SHOW_ALL_MAIL` | unset | whether the All Mail folder appears in your mail client |
+
+**Telemetry is off by default, and that is a decision rather than an inherited default.** A container on a server has nobody to ask, and something that reports back about a mailbox should not start doing so because nobody said otherwise. Turning it on stays possible, in one place, on purpose.
+
+**`BRIDGE_SHOW_ALL_MAIL` is unset rather than defaulted**, because there is a real difference between "off" and "not our business". A default would overwrite whatever was chosen in Proton's own application, the first time this container starts against an existing vault.
+
+All three live in the vault and survive restarts, so **removing a variable does not undo what it set** - change the value instead. `proton-info` prints what currently applies, read from the bridge rather than echoed from the environment.
+
 ### Environment variables
 
 | Variable | Default | Meaning |
