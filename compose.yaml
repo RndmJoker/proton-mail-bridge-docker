@@ -1,0 +1,117 @@
+# Proton Mail Bridge in a container.
+#
+#   docker compose up -d
+#   docker compose exec proton-bridge proton-login
+#   docker compose exec proton-bridge proton-info
+#
+# The second line signs you in. It is interactive on purpose: your Proton
+# password is never read from an environment variable, because a password in
+# one ends up in the process list, in `docker inspect`, and in every log that
+# dumps the environment. The third prints what your mail client needs.
+#
+# Copy `.env.example` to `.env` first if you want to change anything. Every
+# variable is optional and the defaults are the bridge's own.
+
+services:
+  proton-bridge:
+    # NOTHING IS PUBLISHED YET. Until the first release, build it yourself -
+    # see "Building it yourself" in the readme - and change this to whatever
+    # you tagged:
+    #
+    #   image: proton-mail-bridge:local
+    image: ghcr.io/rndmjoker/proton-mail-bridge-docker:3.25
+    container_name: proton-bridge
+
+    # Pin to a digest instead once you have one you trust. All the tags move:
+    # the image is rebuilt nightly on a newer Debian base, which is how
+    # security updates reach it between releases. Only a digest is fixed.
+    #
+    #   image: ghcr.io/rndmjoker/proton-mail-bridge-docker@sha256:...
+
+    restart: unless-stopped
+
+    # ---------------------------------------------------------------------
+    # THE VOLUME HOLDS THE KEYS TO YOUR ENTIRE MAILBOX
+    # ---------------------------------------------------------------------
+    # A GPG key without a passphrase, the `pass` keychain, and the bridge
+    # vault. Anyone who copies it reads all your mail, without knowing a
+    # password and without leaving a trace.
+    #
+    # Keep it on encrypted storage. Keep it out of backups other people can
+    # read. Keep it out of synced folders.
+    volumes:
+      - proton-bridge-data:/data
+
+    # ---------------------------------------------------------------------
+    # 127.0.0.1 IS NOT DECORATION
+    # ---------------------------------------------------------------------
+    # Without it Docker publishes on every interface, and IMAP and SMTP would
+    # face the open internet. They carry decrypted mail and a password that
+    # opens the whole account.
+    #
+    # To reach the bridge from another machine, use a tunnel or a VPN and keep
+    # these bound to localhost. Never remove the prefix to "make it work".
+    #
+    # Already running Proton's desktop bridge? It holds 1143 and 1025 on the
+    # host, so publish elsewhere - 127.0.0.1:11143:1143 - and set
+    # BRIDGE_PUBLIC_IMAP_PORT so `proton-info` names the number your mail
+    # client actually needs.
+    # The port number is the same on both sides: the forward inside the
+    # container changes the address, not the port. Change it in `.env` and all
+    # three places below follow, because compose substitutes from there.
+    ports:
+      - "127.0.0.1:${BRIDGE_IMAP_PORT:-1143}:${BRIDGE_IMAP_PORT:-1143}"
+      - "127.0.0.1:${BRIDGE_SMTP_PORT:-1025}:${BRIDGE_SMTP_PORT:-1025}"
+
+    env_file:
+      - path: .env
+        required: false
+
+    # The sign-in page is not published. It accepts your Proton password, and
+    # `docker compose exec proton-bridge proton-login` does the same job
+    # without putting it on a port. If you do want the page in a browser, see
+    # "Signing in through a browser instead" in the readme: it needs
+    # BRIDGE_SETUP_EXPOSE=true as well as a published 8443, and it belongs
+    # behind a tunnel even then.
+
+    # Nothing in here needs to add capabilities, write outside the volume, or
+    # gain privileges. Saying so costs nothing and takes the options away.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # The bridge answers on its own gRPC socket long before a mail port opens,
+    # so the port is the honest signal that it is usable.
+    #
+    # socat rather than nc, because the image has no nc - checked rather than
+    # assumed, and a healthcheck built on a missing binary would report the
+    # container unhealthy forever while everything worked. socat is in there
+    # because the forwards need it. Measured: exit 1 while the port is still
+    # closed, 0 once it is open.
+    #
+    # start_period is generous because the first start on an empty volume
+    # generates a GPG key and unlocks a new vault, and because a container
+    # holding an existing vault waits for the bridge to read it.
+    healthcheck:
+      test: ["CMD-SHELL", "socat -u /dev/null TCP:127.0.0.1:${BRIDGE_IMAP_PORT:-1143}"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 180s
+
+    # The bridge writes to the log at info level and never writes credentials
+    # there. Without a limit the log grows without bound on a long-running
+    # host.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  proton-bridge-data:
+    # Named rather than a bind mount, deliberately. A bind mount would put the
+    # keys to your mailbox in a directory that is easy to sync, back up or
+    # copy by accident. If you do bind-mount it, read the warning above again
+    # and pick the path knowing what is in it.
