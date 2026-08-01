@@ -1,0 +1,123 @@
+name: Digest probe
+
+# A temporary measurement for #39, not part of the build.
+#
+# The two registries stored different manifests for the same image, so the
+# digests differed and a provenance attestation could only ever cover one of
+# them. The check in scripts/ci/push-image.sh noticed, which is the check doing
+# its job, but it is a detector and cannot be anything else: the digest does
+# not exist until after the push.
+#
+# Before choosing a fix it is worth knowing what actually differs, rather than
+# picking whichever workaround happens to work. That needs a push, and it has
+# to happen here rather than on a workstation, because Docker and Podman
+# negotiate manifest media types differently and only this runner has the
+# combination the real build uses.
+#
+# So: a minimal image, a few hundred bytes, pushed three ways to a private
+# throwaway repository, with every manifest read back and compared byte for
+# byte. The repository is created private through the API before anything is
+# pushed - a plain push would create it public - and deleted at the end.
+#
+# Delete this file once #39 is closed.
+
+on:
+  push:
+    branches: [bug/registry-digests]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOCKER_BUILDKIT: 1
+  DOCKERHUB_USER: rndmjoker
+  # Deliberately not the real image name. Nothing here should be able to touch
+  # what people pull.
+  PROBE: digest-probe
+
+jobs:
+  probe:
+    name: What differs between the two registries
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versions in play
+        run: |
+          docker version
+          docker buildx version
+
+      - name: Log in
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.repository_owner }}
+        run: |
+          if [ -z "$DOCKERHUB_TOKEN" ]; then
+            echo "::error::DOCKERHUB_TOKEN is not set."
+            exit 1
+          fi
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login docker.io -u "$DOCKERHUB_USER" --password-stdin
+
+      # A push into a repository that does not exist creates it, and Docker Hub
+      # creates it public. That is the whole reason this step comes first.
+      - name: Create the Docker Hub repository, private
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: bash scripts/ci/probe/dockerhub-repo.sh create
+
+      - name: Build a minimal image
+        run: |
+          mkdir -p probe-ctx
+          printf 'nothing to see here\n' > probe-ctx/marker
+          cat > probe-ctx/Dockerfile <<'EOF'
+          FROM scratch
+          COPY marker /marker
+          EOF
+          docker build -t "$PROBE:local" probe-ctx
+          docker image inspect "$PROBE:local" --format 'local image id: {{.Id}}'
+
+      - name: Push the same image to both, the way the real build does
+        id: plain
+        run: bash scripts/ci/probe/push-both.sh plain
+
+      - name: Read both manifests back and compare
+        run: bash scripts/ci/probe/compare-manifests.sh plain
+
+      - name: Push once and copy across with imagetools
+        id: copy
+        run: bash scripts/ci/probe/push-both.sh copy
+
+      - name: Read both manifests back and compare
+        run: bash scripts/ci/probe/compare-manifests.sh copy
+
+      - name: Push both in one buildx invocation
+        id: buildx
+        run: bash scripts/ci/probe/push-both.sh buildx
+
+      - name: Read both manifests back and compare
+        run: bash scripts/ci/probe/compare-manifests.sh buildx
+
+      # `always()` because the point of the run is the measurement, and leaving
+      # a repository behind on a failed run would be worse than the failure.
+      - name: Delete the Docker Hub repository
+        if: always()
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: bash scripts/ci/probe/dockerhub-repo.sh delete
+
+      - name: Delete the ghcr package
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # May fail if the token cannot delete packages; say so rather than
+          # hide it, because then somebody has to remove it by hand.
+          gh api -X DELETE "user/packages/container/${PROBE}" \
+            || echo "::warning::Could not delete the ghcr package ${PROBE}. Remove it by hand."
