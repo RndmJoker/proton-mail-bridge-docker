@@ -1,0 +1,118 @@
+# Dependency updates.
+#
+# ## Why this exists at all
+#
+# Alerts tell you about a disclosure after it happened. This opens a pull
+# request before that, for versions nobody has filed an advisory about yet.
+# Between the two, `govulncheck` in CI is the thing that fails a build, and it
+# only fails on what is actually reachable - so these three cover different
+# ground and none of them replaces another.
+#
+# ## What had to change to allow this
+#
+# Dependabot could not create a branch here until 2026-08-01. The `branch
+# naming` ruleset includes `~ALL` and excludes only the nine allowed prefixes,
+# and `dependabot/` was not one of them, so every attempt failed at the server
+# before a pull request existed - with nothing in the repository to show for
+# it. `refs/heads/dependabot/**` and four deeper levels are excluded now.
+#
+# The deeper levels are not decoration: a gomod branch is
+# `dependabot/go_modules/golang.org/x/net-0.56.0`, four segments past the
+# prefix, and the existing entries show that `**` covers one level here -
+# otherwise `feature/**/**` would not sit next to `feature/**`. Verified by
+# pushing that exact name, and by checking that an unlisted prefix is still
+# refused with GH013.
+#
+# ## What these pull requests cannot do, and how to handle that
+#
+# A pull request onto `main` here must raise `VERSION` and carry a title ending
+# in `|| v<version>`. Dependabot does neither, and cannot be taught to.
+#
+# So its pull requests are **input, not merges**. Read the diff, then either
+# apply it on a properly named branch, or push the version bump onto
+# Dependabot's branch and retitle before merging. Either way a person looks at
+# it, which for a dependency change is the point.
+#
+# ## What Dependabot cannot see here
+#
+# The tools this CI pins by hand, because they are fetched by URL in shell
+# rather than declared in a manifest:
+#
+#   shellcheck 0.11.0, hadolint 2.14.0, gitleaks 8.24.3   (ci.yml)
+#   protoc, protoc-gen-go, protoc-gen-go-grpc             (scripts/generate-proto.sh)
+#
+# Those are most of the pinned versions in this repository. They were pinned
+# for reasons that have not changed, and they still need somebody to look at
+# them from time to time. Nothing automated will remind you.
+
+version: 2
+
+updates:
+  # ---------------------------------------------------------------------
+  # Go modules
+  # ---------------------------------------------------------------------
+  # Only what this repository declares. The bridge's own dependency tree
+  # comes from Proton's go.mod and is not reachable from here - that is what
+  # the binary scan in ci.yml looks at, see #47.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      # Off Monday and off the hour, for the same reason as the workflows:
+      # scheduled runs across GitHub queue at both. Also clear of the nightly
+      # rebuild at 03:23 and the upstream watcher at 05:23.
+      day: tuesday
+      time: "06:17"
+      timezone: Etc/UTC
+    # One pull request rather than six after a quiet week. Security updates
+    # are deliberately not grouped: they are the ones worth reading on their
+    # own.
+    groups:
+      go-dependencies:
+        applies-to: version-updates
+        patterns: ["*"]
+    open-pull-requests-limit: 3
+    commit-message:
+      # Matches the commit format in git-workflow.md, which has `chore` as a
+      # prefix. The pull request title still needs fixing by hand before a
+      # merge, see above.
+      prefix: chore
+
+  # ---------------------------------------------------------------------
+  # GitHub Actions
+  # ---------------------------------------------------------------------
+  # Everything under .github/workflows/. Worth having: an action pinned to a
+  # major tag follows whatever that tag points at, and one pinned to a commit
+  # rots silently.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "06:17"
+      timezone: Etc/UTC
+    groups:
+      github-actions:
+        applies-to: version-updates
+        patterns: ["*"]
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore
+
+  # ---------------------------------------------------------------------
+  # Base images
+  # ---------------------------------------------------------------------
+  # `debian:bookworm-slim` and `golang:1.26-bookworm`, both pinned by tag
+  # rather than by digest. The tags move, and the nightly rebuild picks that
+  # up already - what Dependabot adds is noticing when the tag itself should
+  # change, which is `golang:1.27` when the time comes.
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "06:17"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: chore
