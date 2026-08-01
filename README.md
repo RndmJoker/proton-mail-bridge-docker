@@ -267,6 +267,7 @@ These come from the bridge itself or from running inside a container. They will 
 - **Human verification needs a human.** If Proton asks for it, someone has to open a link in a browser.
 - **`amd64` only.** Proton publishes no package for ARM.
 - **A paid Proton plan is required.** The bridge is not part of the free tier.
+- **The public key attached to every outgoing message cannot be switched off from here.** It is an account setting, not a bridge one: Proton web interface, **Settings**, **Encryption and keys**, **Attach public key**. Switching it off there switches it off everywhere the account sends from, this container included. There is no environment variable for it and there cannot be one - the bridge reads the value from Proton's `MailSettings` at send time, and this container has no session of its own to ask with. It cannot be shown in `proton-info` either: the bridge's gRPC interface exposes `MailServerSettings`, which is four fields (`imapPort`, `smtpPort`, `useSSLForImap`, `useSSLForSmtp`) and nothing about keys.
 
 ## Relation to proton-mcp
 
