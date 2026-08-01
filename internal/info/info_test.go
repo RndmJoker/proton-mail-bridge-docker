@@ -260,7 +260,8 @@ func TestFormatShowsTheThreeSwitches(t *testing.T) {
 		"Show All Mail          off",
 		"Usage diagnostics      off",
 		"Read from the bridge",
-		"survive restarts",
+		"enforced at every start",
+		"only\n  touched when set",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("%q is missing from the output:\n%s", want, out)

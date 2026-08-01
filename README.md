@@ -310,7 +310,13 @@ Three switches the bridge has, applied at every start and read back afterwards. 
 
 **`BRIDGE_SHOW_ALL_MAIL` is unset rather than defaulted**, because there is a real difference between "off" and "not our business". A default would overwrite whatever was chosen in Proton's own application, the first time this container starts against an existing vault.
 
-All three live in the vault and survive restarts, so **removing a variable does not undo what it set** - change the value instead. `proton-info` prints what currently applies, read from the bridge rather than echoed from the environment.
+**The two with a default behave differently from the one without, and the difference matters.**
+
+`BRIDGE_ALTERNATIVE_ROUTING` and `BRIDGE_TELEMETRY` are enforced on every start. Remove the variable and the default comes back. That is the point: "telemetry is off by default" would be a claim that quietly stops being true the moment somebody tries the other value once, because the value lives in the vault and would otherwise stay there forever.
+
+`BRIDGE_SHOW_ALL_MAIL` has no default, so it is only touched when it is set. Remove it and whatever is in the vault stays - including a value set in Proton's own application.
+
+`proton-info` prints what currently applies, read from the bridge rather than echoed from the environment. When the two disagree, the bridge is right.
 
 ### Environment variables
 

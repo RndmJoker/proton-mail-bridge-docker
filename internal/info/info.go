@@ -202,9 +202,10 @@ func Format(report Report) string {
 	// is worth stating. These live in the vault and survive a restart, so a
 	// variable removed from the compose file does not undo what it once set.
 	// Somebody looking for why All Mail is still there needs to know that.
-	b.WriteString("\n  Read from the bridge, not from this container's environment. They live\n")
-	b.WriteString("  in the vault and survive restarts, so removing BRIDGE_SHOW_ALL_MAIL does\n")
-	b.WriteString("  not undo what it set - change the value instead.\n")
+	b.WriteString("\n  Read from the bridge, not from this container's environment.\n")
+	b.WriteString("\n  The first two are enforced at every start, so removing their variable\n")
+	b.WriteString("  puts the default back. BRIDGE_SHOW_ALL_MAIL has no default and is only\n")
+	b.WriteString("  touched when set, so removing it leaves whatever the vault holds.\n")
 
 	if report.Telemetry {
 		b.WriteString("\n  Usage diagnostics are ON. This container defaults them off; something\n")

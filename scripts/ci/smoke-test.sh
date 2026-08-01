@@ -798,31 +798,6 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# proton-repair and proton-reset refuse without a terminal
-# --------------------------------------------------------------------------
-
-# The refusal is the feature, particularly for proton-reset: it empties the
-# vault, so a run with nobody there to confirm must not proceed. `docker exec`
-# without -it is exactly the stray line in a script this guards against, and
-# it is also how CI runs everything, which makes it easy to test.
-#
-# Checked here rather than only in a unit test because the thing being asserted
-# is what happens when the binary meets a real pipe, not what a function
-# returns.
-
-log "proton-repair and proton-reset without a terminal"
-
-for tool in proton-repair proton-reset; do
-    if out="$("$ENGINE" exec "$CONTAINER" "$tool" 2>&1)"; then
-        fail "$tool ran without a terminal instead of refusing"
-    elif printf '%s' "$out" | grep -q "docker exec -it"; then
-        ok "$tool refuses without a terminal and says how to run it"
-    else
-        fail "$tool failed without explaining why: $out"
-    fi
-done
-
-# --------------------------------------------------------------------------
 # The three plain switches take effect, and telemetry is off by default
 # --------------------------------------------------------------------------
 
@@ -887,7 +862,9 @@ fi
     -e "BRIDGE_TELEMETRY=true" \
     "$IMAGE" >/dev/null
 
-wait_ready "$SWITCH_CONTAINER" 2 || fail "the switch container was not ready again within ${READY_TIMEOUT}s"
+# One, not two: the container was removed and recreated above, so its log
+# starts empty. Counting two here waited for a line that was never coming.
+wait_ready "$SWITCH_CONTAINER" || fail "the switch container was not ready again within ${READY_TIMEOUT}s"
 
 telemetry_info="$("$ENGINE" exec "$SWITCH_CONTAINER" proton-info 2>&1 || true)"
 
@@ -897,13 +874,57 @@ else
     fail "telemetry stayed off although it was asked for: $(printf '%s' "$telemetry_info" | grep -i 'Usage diagnostics' || echo 'no such line')"
 fi
 
-# Unset on this run, and the value must survive from the run before it: these
-# live in the vault, which is what the readme tells people.
-if printf '%s' "$telemetry_info" | grep -q 'Alternative routing    ON'; then
-    ok "a setting from the previous run survived in the vault"
+# The two kinds of setting behave differently on purpose, and this is where
+# the difference shows.
+#
+# BRIDGE_ALTERNATIVE_ROUTING has a default, so it is enforced on every start:
+# removing the variable puts it back to off. Anything else would make "off by
+# default" a claim that stops being true the moment somebody tries the other
+# value once. The same goes for BRIDGE_TELEMETRY, which is the reason the rule
+# exists at all.
+#
+# BRIDGE_SHOW_ALL_MAIL has no default, so it is only touched when set, and what
+# is in the vault stays.
+#
+# The first version of this check asserted the opposite, because the readme
+# said so. The readme was wrong; the code was right.
+if printf '%s' "$telemetry_info" | grep -q 'Alternative routing    off'; then
+    ok "removing BRIDGE_ALTERNATIVE_ROUTING restores its default, so the default is a promise"
 else
-    fail "alternative routing was lost when the variable was removed, which contradicts the readme"
+    fail "alternative routing kept its old value although the variable was removed: $(printf '%s' "$telemetry_info" | grep -i 'Alternative routing' || echo 'no such line')"
 fi
+
+if printf '%s' "$telemetry_info" | grep -q 'Show All Mail          off'; then
+    ok "BRIDGE_SHOW_ALL_MAIL kept its vault value although the variable was removed"
+else
+    fail "All Mail did not survive in the vault: $(printf '%s' "$telemetry_info" | grep -i 'Show All Mail' || echo 'no such line')"
+fi
+
+# --------------------------------------------------------------------------
+# proton-repair and proton-reset refuse without a terminal
+# --------------------------------------------------------------------------
+
+# The refusal is the feature, particularly for proton-reset: it empties the
+# vault, so a run with nobody there to confirm must not proceed. `docker exec`
+# without -it is exactly the stray line in a script this guards against, and
+# it is also how CI runs everything, which makes it easy to test.
+#
+# Run against the container that is still up at this point. The first version
+# of this used $CONTAINER, which has been stopped by the port checks above, so
+# both tools failed with "container is not running" - a failure that says
+# nothing about the tools.
+
+log "proton-repair and proton-reset without a terminal"
+
+for tool in proton-repair proton-reset; do
+    if out="$("$ENGINE" exec "$SWITCH_CONTAINER" "$tool" 2>&1)"; then
+        fail "$tool ran without a terminal instead of refusing"
+    elif printf '%s' "$out" | grep -q "docker exec -it"; then
+        ok "$tool refuses without a terminal and says how to run it"
+    else
+        fail "$tool failed without explaining why: $out"
+    fi
+done
 
 "$ENGINE" rm -f "$SWITCH_CONTAINER" >/dev/null 2>&1 || true
 rm -rf "$switch_volume_dir" 2>/dev/null || true
