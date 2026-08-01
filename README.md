@@ -278,6 +278,24 @@ docker run -v /your/path:/data:Z ...   # SELinux hosts, Fedora and RHEL among th
 
 Without the `:Z` the container is denied access on an enforcing system, and the entrypoint stops with an explanation rather than failing somewhere deeper.
 
+### Repairing and resetting
+
+Two commands for the two situations a running container cannot talk itself out of. Both need a terminal, so `docker exec -it`.
+
+```bash
+docker exec -it proton-bridge proton-repair
+```
+
+Makes the bridge throw its cached data away and download every account again. The way out of a mailbox that has drifted out of step with the server: messages gone on the server but still in the client, folders that do not match, a search that finds nothing it should. The download then runs in the background for as long as the mailbox takes, and the mail client will see messages disappear and come back while it does. **Nothing is deleted on Proton's servers.**
+
+```bash
+docker exec -it proton-bridge proton-reset
+```
+
+Signs every account out and empties the vault, leaving the container as it was before anyone used it. It lists the accounts and what is about to be lost, then asks you to type `reset` - not a flag and not a y/n prompt, because this is the only thing here that destroys something on purpose. Afterwards every mail client configured against this container stops working, since the bridge password is generated fresh on the next sign-in.
+
+**Neither is a variable, deliberately.** A variable that repairs on start repairs on every restart, and a restart is the first thing anyone tries when something is wrong. That turns a fifteen-minute annoyance into an hours-long download, every time, with nothing saying why.
+
 ### Bridge settings
 
 Three switches the bridge has, applied at every start and read back afterwards. If one does not stick, the container stops rather than running in a state its log does not describe.

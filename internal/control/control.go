@@ -245,3 +245,48 @@ func Version(ctx context.Context, client bridgepb.BridgeClient) (string, error) 
 
 	return version.GetValue(), nil
 }
+
+// Repair asks the bridge to reload every account from scratch.
+//
+// The bridge throws its cached data away and downloads everything again. That
+// is the way out of a mailbox that has drifted out of step with the server,
+// and without it the only remedy in this container is deleting the volume -
+// which throws away the vault and the keychain along with the problem.
+//
+// Returns the accounts as the bridge reports them straight afterwards, so the
+// caller can say what happened rather than that a request was sent.
+func Repair(ctx context.Context, client bridgepb.BridgeClient) ([]*bridgepb.User, error) {
+	if _, err := client.TriggerRepair(ctx, &emptypb.Empty{}); err != nil {
+		return nil, fmt.Errorf("the bridge refused to start a repair: %w", err)
+	}
+
+	users, err := client.GetUserList(ctx, &emptypb.Empty{})
+	if err != nil {
+		return nil, fmt.Errorf("the repair was started but the account list could not be read back: %w", err)
+	}
+
+	return users.GetUsers(), nil
+}
+
+// Reset signs every account out and empties the vault.
+//
+// Confirms afterwards that the account list is actually empty. A reset that
+// reported success and left an account behind would be the worst possible
+// outcome for this particular command: somebody runs it precisely because they
+// want the container to have forgotten, and would have no reason to check.
+func Reset(ctx context.Context, client bridgepb.BridgeClient) error {
+	if _, err := client.TriggerReset(ctx, &emptypb.Empty{}); err != nil {
+		return fmt.Errorf("the bridge refused to reset: %w", err)
+	}
+
+	users, err := client.GetUserList(ctx, &emptypb.Empty{})
+	if err != nil {
+		return fmt.Errorf("the reset was started but the account list could not be read back, so it is not known whether anything is left: %w", err)
+	}
+
+	if remaining := len(users.GetUsers()); remaining > 0 {
+		return fmt.Errorf("the reset returned but %d account(s) are still signed in; the vault has not been emptied", remaining)
+	}
+
+	return nil
+}

@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/bridgepb"
@@ -46,6 +47,14 @@ type stubClient struct {
 
 	// swallowSwitch is swallowSet for the three above.
 	swallowSwitch bool
+
+	userList     []*bridgepb.User
+	repairCalled bool
+	resetCalled  bool
+	swallowReset bool
+	repairErr    error
+	resetErr     error
+	userListErr  error
 
 	dohErr       error
 	dohGetErr    error
@@ -472,5 +481,113 @@ func TestReadSwitchesUndoesTheInversion(t *testing.T) {
 
 	if got.ShowAllMail {
 		t.Error("All Mail reported as visible although it is not")
+	}
+}
+
+func (s *stubClient) TriggerRepair(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+	if s.repairErr != nil {
+		return nil, s.repairErr
+	}
+
+	s.repairCalled = true
+
+	return &emptypb.Empty{}, nil
+}
+
+func (s *stubClient) TriggerReset(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+	if s.resetErr != nil {
+		return nil, s.resetErr
+	}
+
+	s.resetCalled = true
+
+	// A reset that works empties the list. swallowReset is the failure this
+	// exists to catch: the call returns fine and an account is still there.
+	if !s.swallowReset {
+		s.userList = nil
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+func (s *stubClient) GetUserList(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*bridgepb.UserListResponse, error) {
+	if s.userListErr != nil {
+		return nil, s.userListErr
+	}
+
+	return &bridgepb.UserListResponse{Users: s.userList}, nil
+}
+
+// TestResetFailsWhenAnAccountSurvives is the point of this whole command.
+//
+// Somebody runs a reset precisely because they want the container to have
+// forgotten. If it reported success and left an account behind, they would
+// have no reason to look, and the thing they wanted gone would still be there.
+func TestResetFailsWhenAnAccountSurvives(t *testing.T) {
+	stub := newStub()
+	stub.userList = []*bridgepb.User{{Username: "someone@example.invalid"}}
+	stub.swallowReset = true
+
+	err := Reset(context.Background(), stub)
+	if err == nil {
+		t.Fatal("Reset reported success although an account is still signed in")
+	}
+
+	if !strings.Contains(err.Error(), "still signed in") {
+		t.Errorf("the error does not say what is wrong: %v", err)
+	}
+}
+
+func TestResetSucceedsWhenTheVaultIsEmptied(t *testing.T) {
+	stub := newStub()
+	stub.userList = []*bridgepb.User{{Username: "someone@example.invalid"}}
+
+	if err := Reset(context.Background(), stub); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+
+	if !stub.resetCalled {
+		t.Error("the bridge was never asked to reset")
+	}
+}
+
+// An unreadable list after a reset is not success. It is not knowing, and the
+// two must not look the same to the caller.
+func TestResetFailsWhenTheListCannotBeRead(t *testing.T) {
+	stub := newStub()
+	stub.userListErr = errors.New("nope")
+
+	if err := Reset(context.Background(), stub); err == nil {
+		t.Error("Reset reported success although it could not check")
+	}
+}
+
+func TestRepairReturnsWhatTheBridgeReports(t *testing.T) {
+	stub := newStub()
+	stub.userList = []*bridgepb.User{
+		{Username: "one@example.invalid"},
+		{Username: "two@example.invalid"},
+	}
+
+	users, err := Repair(context.Background(), stub)
+	if err != nil {
+		t.Fatalf("Repair: %v", err)
+	}
+
+	if !stub.repairCalled {
+		t.Error("the bridge was never asked to repair")
+	}
+
+	if len(users) != 2 {
+		t.Errorf("got %d accounts back, want 2", len(users))
+	}
+}
+
+func TestRepairFailsWhenTheBridgeRefuses(t *testing.T) {
+	stub := newStub()
+	stub.repairErr = errors.New("nope")
+
+	if _, err := Repair(context.Background(), stub); err == nil {
+		t.Error("Repair reported success although the bridge refused")
 	}
 }

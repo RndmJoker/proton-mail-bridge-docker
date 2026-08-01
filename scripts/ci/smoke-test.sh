@@ -798,6 +798,31 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# proton-repair and proton-reset refuse without a terminal
+# --------------------------------------------------------------------------
+
+# The refusal is the feature, particularly for proton-reset: it empties the
+# vault, so a run with nobody there to confirm must not proceed. `docker exec`
+# without -it is exactly the stray line in a script this guards against, and
+# it is also how CI runs everything, which makes it easy to test.
+#
+# Checked here rather than only in a unit test because the thing being asserted
+# is what happens when the binary meets a real pipe, not what a function
+# returns.
+
+log "proton-repair and proton-reset without a terminal"
+
+for tool in proton-repair proton-reset; do
+    if out="$("$ENGINE" exec "$CONTAINER" "$tool" 2>&1)"; then
+        fail "$tool ran without a terminal instead of refusing"
+    elif printf '%s' "$out" | grep -q "docker exec -it"; then
+        ok "$tool refuses without a terminal and says how to run it"
+    else
+        fail "$tool failed without explaining why: $out"
+    fi
+done
+
+# --------------------------------------------------------------------------
 # The three plain switches take effect, and telemetry is off by default
 # --------------------------------------------------------------------------
 
