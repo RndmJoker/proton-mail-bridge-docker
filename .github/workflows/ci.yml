@@ -87,6 +87,35 @@ jobs:
           go vet ./...
           go test ./...
 
+  vuln:
+    name: Vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # govulncheck compiles what it scans, and nothing here compiles without
+      # the generated client.
+      - name: Generate the gRPC client
+        run: bash scripts/generate-proto.sh
+
+      # Fails the build on a reachable finding, and only on a reachable one.
+      # govulncheck works from the call graph rather than the dependency list,
+      # so a vulnerability in a package that is imported but never entered is
+      # reported and does not block. That is the property worth having: what it
+      # does flag is worth reading.
+      #
+      # This is a check that can turn red with no commit behind it - a
+      # disclosure on a quiet Tuesday blocks every merge until somebody deals
+      # with it. That is the trade, made deliberately; proton-mcp made the same
+      # one for `npm audit`. The alternative is finding out from an alert weeks
+      # later, in a project that handles a mailbox.
+      - name: govulncheck
+        run: bash scripts/ci/govulncheck.sh source
+
   proto:
     name: Interface definition
     runs-on: ubuntu-latest
@@ -133,6 +162,36 @@ jobs:
             exit 0
           fi
           bash scripts/ci/smoke-test.sh
+
+      # The larger half of #34, and the only look this project takes at
+      # Proton's dependency tree. That tree is far bigger than ours and it is
+      # the code that touches a mailbox; the source scan above sees none of it.
+      #
+      # Here rather than in its own job because the binary only exists after
+      # the build, and the build is three quarters of an hour. This adds about
+      # a minute to it.
+      - uses: actions/setup-go@v5
+        if: hashFiles('docker/Dockerfile') != ''
+        with:
+          go-version-file: go.mod
+
+      - name: Scan the bridge binary
+        if: hashFiles('docker/Dockerfile') != ''
+        env:
+          # Reports rather than fails, and the reason is in govulncheck.sh:
+          # the only responses available here are to raise the pinned upstream
+          # commit or to wait for Proton. A merge blocked by something the
+          # change in front of it cannot fix is a red mark that gets clicked
+          # past, which is worse than a warning that gets read.
+          ADVISORY: "1"
+        run: |
+          # Out of the image rather than off a running container: `docker
+          # create` makes no process, so this works whether or not the
+          # entrypoint would start.
+          id="$(docker create proton-mail-bridge:smoke)"
+          docker cp "$id:/usr/local/bin/bridge" ./bridge-binary
+          docker rm -f "$id" > /dev/null
+          bash scripts/ci/govulncheck.sh binary ./bridge-binary
 
   secrets:
     name: Secret scan

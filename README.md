@@ -39,6 +39,21 @@ Keep it on encrypted storage. Keep it out of backups other people can read. Keep
 
 Running the bridge on a server means decrypted mail lives on that server. That is the trade you are making. Make it knowingly.
 
+### What CI checks about dependencies
+
+[`govulncheck`](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) runs on every change, twice, with different consequences:
+
+| Scan | What it covers | On a finding |
+| :--- | :--- | :--- |
+| Source | what this repository declares in `go.mod` | the build fails |
+| The built `bridge` binary | Proton's entire dependency tree | a warning in the job summary |
+
+The split is deliberate. A reachable vulnerability in our own dependencies is something to fix here, so it blocks. One in Proton's is not: the only levers are raising the pinned upstream commit or waiting for Proton, and a merge blocked by something the change in front of it cannot fix becomes a red mark people click past.
+
+`govulncheck` works from the call graph rather than the dependency list, so a vulnerability in a package that is imported but never entered is reported and does not block. That is the point - what it does flag is worth reading.
+
+**Two limits, so nobody assumes otherwise.** It sees Go and nothing else: `gnupg`, `pass`, `socat`, `tini`, `libsecret`, `libfido2`, `libcbor` and OpenSSL come from Debian and are covered only by rebuilding on a current base, which happens nightly. And which standard library findings appear depends on the Go version doing the scanning, so the report names it - a workstation one patch release behind reports vulnerabilities CI does not have.
+
 ## Where the images are
 
 Two registries, same image, same digest:
