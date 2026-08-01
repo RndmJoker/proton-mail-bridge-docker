@@ -59,6 +59,26 @@ on:
     # without saying so.
     - cron: '23 3 * * *'
 
+# Two publish runs must never overlap, and this is why.
+#
+# Most of the tags this pushes - `3.25.0`, `3.25`, `edge` - do not name an
+# image version. Two runs building different sources therefore compete for the
+# same three names in the same two repositories, and whichever finishes last
+# wins each of them, per registry, independently.
+#
+# That is what happened on 2026-07-31 and it was misread as a registry
+# problem. Measured afterwards: the v0.5.0 run pushed from 15:21:12 to
+# 15:21:33 and the v0.5.1 run from 15:21:25 to 15:21:48, overlapping by eight
+# seconds, and the digest comparison in push-image.sh then reported two
+# different digests for "the same" image. They were not the same image. See
+# #39.
+#
+# `cancel-in-progress: false` on purpose: a publish that has already pushed
+# some of its tags must not be killed halfway. The second run waits.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
 permissions:
   contents: read
 

@@ -79,7 +79,7 @@ ghcr.io/rndmjoker/proton-mail-bridge-docker
 docker.io/rndmjoker/proton-mail-bridge-docker
 ```
 
-The two currently store it under **different digests**, which is a defect and is being fixed - see [#39](https://github.com/RndmJoker/proton-mail-bridge-docker/issues/39). It matters because a provenance attestation signs a digest, so until it is fixed an attestation can only cover one of the two copies.
+Same digest in both, which matters because a provenance attestation signs a digest rather than a tag. `scripts/ci/push-image.sh` compares what the two registries returned and fails the publish if they disagree.
 
 | Tag | What it means |
 | :--- | :--- |
