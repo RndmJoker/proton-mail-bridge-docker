@@ -10,6 +10,28 @@
 # would be the unattested one. Comparing the digests is how that stops being a
 # thing to hope for.
 #
+# ## What this check caught once, and what it actually meant
+#
+# On 2026-07-31 it reported two different digests and failed the step, which
+# looked like Docker Hub rewriting the manifest on the way in. It was not.
+# Measured on 2026-08-01 by pushing one minimal image to both registries three
+# different ways (#39):
+#
+#   docker tag + docker push, per registry   identical, byte for byte
+#   docker buildx build --push, both tags    identical, byte for byte
+#   buildx imagetools create to copy across  DIFFERENT
+#
+# The third is the one that had been proposed as the fix. It turns a
+# manifest into a manifest list on the way over - docker/buildx#2481 - so
+# adopting it would have caused the problem it was meant to solve. The
+# method already in use here is the correct one.
+#
+# The real cause was two publish runs overlapping by eight seconds and
+# competing for the same movable tags. publish.yml has a `concurrency` group
+# now. This comparison stays anyway: it cannot prevent anything, since the
+# digest does not exist until after the push, but it is the only thing that
+# would notice a registry changing its behaviour later.
+#
 # The refs to push are read from standard input, one per line, so this composes
 # with scripts/ci/image-tags.sh.
 #
