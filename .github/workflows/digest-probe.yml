@@ -67,10 +67,15 @@ jobs:
 
       # A push into a repository that does not exist creates it, and Docker Hub
       # creates it public. That is the whole reason this step comes first.
-      - name: Create the Docker Hub repository, private
+      #
+      # It only checks. Creating it through the API came back `403 insufficient
+      # scope`: DOCKERHUB_TOKEN may push and pull and may not manage
+      # repositories, which is the right shape for that secret. So the
+      # repository is created by hand once, and deleted by hand afterwards.
+      - name: The Docker Hub repository has to exist and be private
         env:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: bash scripts/ci/probe/dockerhub-repo.sh create
+        run: bash scripts/ci/probe/dockerhub-repo.sh
 
       - name: Build a minimal image
         run: |
@@ -104,20 +109,18 @@ jobs:
       - name: Read both manifests back and compare
         run: bash scripts/ci/probe/compare-manifests.sh buildx
 
-      # `always()` because the point of the run is the measurement, and leaving
-      # a repository behind on a failed run would be worse than the failure.
-      - name: Delete the Docker Hub repository
+      # Neither of these can be deleted from here - the Docker Hub token cannot
+      # manage repositories, and GITHUB_TOKEN cannot delete packages. Say so
+      # loudly instead of failing silently, because otherwise two throwaway
+      # repositories sit around for months.
+      - name: What is left to clean up
         if: always()
-        env:
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: bash scripts/ci/probe/dockerhub-repo.sh delete
-
-      - name: Delete the ghcr package
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # May fail if the token cannot delete packages; say so rather than
-          # hide it, because then somebody has to remove it by hand.
-          gh api -X DELETE "user/packages/container/${PROBE}" \
-            || echo "::warning::Could not delete the ghcr package ${PROBE}. Remove it by hand."
+          {
+            echo "### Clean up by hand"
+            echo ""
+            echo "- Docker Hub: <https://hub.docker.com/repository/docker/${DOCKERHUB_USER}/${PROBE}/general> -> Settings -> Delete"
+            echo "- ghcr: <https://github.com/users/${{ github.repository_owner }}/packages/container/${PROBE}/settings> -> Delete"
+            echo ""
+            echo "Neither token here has the rights to do it, on purpose."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
 #
-# Create or delete the throwaway repository the digest probe pushes into.
+# Check that the throwaway repository the digest probe pushes into exists and
+# is private. Creates nothing.
 #
 # Part of the measurement for #39. Delete this directory once that is closed.
 #
-# Why this exists at all: pushing into a repository that does not exist creates
-# it, and Docker Hub creates it public. Nothing about this probe should end up
-# publicly readable, so the repository is created private through the API
-# first, and removed again at the end.
+# Why it only checks: pushing into a repository that does not exist creates it,
+# and Docker Hub creates it public. So something has to establish, before the
+# first push, that the target is private.
+#
+# The first attempt had this script create the repository through the API. That
+# came back `403 access denied: insufficient scope`: DOCKERHUB_TOKEN may push
+# and pull, and it may not manage repositories. Which is the right shape for
+# that secret - a token that can create and delete repositories is not what a
+# publish workflow needs, and widening it for a one-off measurement would be
+# the wrong trade. So the repository is created by hand, once, and this checks.
 #
 # Usage:
-#   DOCKERHUB_TOKEN=... bash scripts/ci/probe/dockerhub-repo.sh create
-#   DOCKERHUB_TOKEN=... bash scripts/ci/probe/dockerhub-repo.sh delete
+#   DOCKERHUB_TOKEN=... bash scripts/ci/probe/dockerhub-repo.sh
 
 set -euo pipefail
 
-action="${1:-}"
 user="${DOCKERHUB_USER:-rndmjoker}"
 name="${PROBE:-digest-probe}"
 
@@ -24,7 +29,16 @@ if [ -z "${DOCKERHUB_TOKEN:-}" ]; then
     exit 1
 fi
 
-# The v2 API wants a JWT, and an access token is exchanged for one at /users/login.
+instructions() {
+    cat >&2 <<TEXT
+::error::Create it first, at https://hub.docker.com/repository/create
+::error::  Namespace:  $user
+::error::  Name:       $name
+::error::  Visibility: Private
+::error::Delete it again once this measurement is done. Nothing else uses it.
+TEXT
+}
+
 jwt="$(
     curl -sS -X POST https://hub.docker.com/v2/users/login \
         -H 'Content-Type: application/json' \
@@ -41,68 +55,33 @@ if [ -z "$jwt" ]; then
     exit 1
 fi
 
-api() {
-    curl -sS -w '\n%{http_code}' -H "Authorization: JWT $jwt" "$@"
-}
+response="$(
+    curl -sS -w '\n%{http_code}' -H "Authorization: JWT $jwt" \
+        "https://hub.docker.com/v2/repositories/$user/$name/"
+)"
+code="$(printf '%s' "$response" | tail -n1)"
+body="$(printf '%s' "$response" | sed '$d')"
 
-case "$action" in
-    create)
-        body="$(
-            api -X POST "https://hub.docker.com/v2/repositories/" \
-                -H 'Content-Type: application/json' \
-                -d "$(printf '{"namespace":"%s","name":"%s","is_private":true,"description":"Throwaway, measuring #39. Delete on sight."}' "$user" "$name")"
-        )"
-        code="$(printf '%s' "$body" | tail -n1)"
-
-        case "$code" in
-            200|201)
-                echo "Created $user/$name, private."
-                ;;
-            400)
-                # Already there. Confirm it is private before pushing into it -
-                # inheriting a public repository would defeat the point.
-                echo "$user/$name already exists, checking that it is private."
-                vis="$(api "https://hub.docker.com/v2/repositories/$user/$name/" | sed '$d' | jq -r '.is_private')"
-                if [ "$vis" != "true" ]; then
-                    echo "::error::$user/$name exists and is public. Refusing to push into it." >&2
-                    exit 1
-                fi
-                echo "It is private."
-                ;;
-            *)
-                echo "::error::Creating $user/$name failed with HTTP $code:" >&2
-                printf '%s\n' "$body" | sed '$d' >&2
-                exit 1
-                ;;
-        esac
-
-        # Read it back rather than trust the create call. This is the one thing
-        # in the probe that must be true.
-        vis="$(api "https://hub.docker.com/v2/repositories/$user/$name/" | sed '$d' | jq -r '.is_private')"
-        if [ "$vis" != "true" ]; then
-            echo "::error::$user/$name does not read back as private (is_private=$vis)." >&2
-            exit 1
-        fi
-        echo "Verified private."
+case "$code" in
+    200) ;;
+    404)
+        echo "::error::$user/$name does not exist." >&2
+        instructions
+        exit 1
         ;;
-
-    delete)
-        body="$(api -X DELETE "https://hub.docker.com/v2/repositories/$user/$name/")"
-        code="$(printf '%s' "$body" | tail -n1)"
-        case "$code" in
-            202|204|404)
-                echo "$user/$name is gone (HTTP $code)."
-                ;;
-            *)
-                echo "::error::Deleting $user/$name failed with HTTP $code. Remove it by hand." >&2
-                printf '%s\n' "$body" | sed '$d' >&2
-                exit 1
-                ;;
-        esac
-        ;;
-
     *)
-        echo "Usage: $0 create|delete" >&2
+        echo "::error::Asking about $user/$name returned HTTP $code:" >&2
+        printf '%s\n' "$body" >&2
         exit 1
         ;;
 esac
+
+private="$(printf '%s' "$body" | jq -r '.is_private')"
+
+if [ "$private" != "true" ]; then
+    echo "::error::$user/$name exists but is public (is_private=$private). Refusing to push into it." >&2
+    instructions
+    exit 1
+fi
+
+echo "$user/$name exists and is private. Safe to push into."
