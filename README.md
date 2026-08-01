@@ -54,6 +54,20 @@ The split is deliberate. A reachable vulnerability in our own dependencies is so
 
 **Two limits, so nobody assumes otherwise.** It sees Go and nothing else: `gnupg`, `pass`, `socat`, `tini`, `libsecret`, `libfido2`, `libcbor` and OpenSSL come from Debian and are covered only by rebuilding on a current base, which happens nightly. And which standard library findings appear depends on the Go version doing the scanning, so the report names it - a workstation one patch release behind reports vulnerabilities CI does not have.
 
+### How a dependency gets updated here
+
+Three things that cover different ground, and none of them replaces another:
+
+| | When it speaks | What it covers |
+| :--- | :--- | :--- |
+| Dependabot version updates | weekly | new versions, before anyone files an advisory |
+| Dependabot alerts | on disclosure | known vulnerabilities in what is declared |
+| `govulncheck` in CI | every change | what is actually reachable, and fails the build |
+
+**Dependabot's pull requests are input, not merges.** A pull request onto `main` here has to raise `VERSION` and carry a title ending in `|| v<version>`, which Dependabot does not do and cannot be taught to. So read the diff, then either apply it on a properly named branch or push the version bump onto Dependabot's branch and retitle it. Either way a person looks at a dependency change, which is the point.
+
+**What nothing automated watches:** the tools this CI pins by hand, because they are fetched by URL in shell rather than declared in a manifest - shellcheck, hadolint and gitleaks in [`ci.yml`](.github/workflows/ci.yml), and protoc with its two plugins in [`scripts/generate-proto.sh`](scripts/generate-proto.sh). They were pinned for reasons that have not changed, and they need somebody to look at them from time to time.
+
 ## Where the images are
 
 **Nowhere yet.** Nothing is published while the first release is being finished, so everything in this section describes how it will work rather than something you can pull today. [Build it yourself](#building-it-yourself) in the meantime.
