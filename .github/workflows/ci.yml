@@ -14,7 +14,7 @@ jobs:
     name: Shell scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The entrypoint runs unattended inside a container. A typo in it would
       # otherwise surface on a user's machine, not here.
@@ -41,7 +41,7 @@ jobs:
     name: Dockerfile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Hadolint
         run: |
@@ -58,7 +58,7 @@ jobs:
     name: Go
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check for a Go module
         id: mod
@@ -70,7 +70,7 @@ jobs:
             echo "No Go module yet, tests skipped."
           fi
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         if: steps.mod.outputs.present == 'true'
         with:
           go-version-file: go.mod
@@ -91,9 +91,9 @@ jobs:
     name: Vulnerabilities
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -120,7 +120,7 @@ jobs:
     name: Interface definition
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # proto/bridge.proto is Proton's file, copied unchanged. Raising
       # BRIDGE_COMMIT without looking at it would otherwise be silent: the
@@ -145,7 +145,7 @@ jobs:
       # check-builder.sh below is what proves the variable took effect.
       DOCKER_BUILDKIT: 1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # First, so that a wrong builder costs twenty seconds instead of the
       # three quarters of an hour the real build takes.
@@ -170,7 +170,7 @@ jobs:
       # Here rather than in its own job because the binary only exists after
       # the build, and the build is three quarters of an hour. This adds about
       # a minute to it.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         if: hashFiles('docker/Dockerfile') != ''
         with:
           go-version-file: go.mod
@@ -197,7 +197,7 @@ jobs:
     name: Secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Gitleaks needs the history to scan past commits, not just the tree.
           fetch-depth: 0
