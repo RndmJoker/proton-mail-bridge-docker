@@ -39,7 +39,7 @@ jobs:
     name: The pinned tag has not moved
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Compare the upstream tag against the pinned commit
         env:
@@ -50,7 +50,7 @@ jobs:
     name: What Proton published
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Compare the latest release against what is pinned
         id: upstream
