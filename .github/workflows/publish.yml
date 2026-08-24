@@ -130,7 +130,7 @@ jobs:
       # No `ref:`. This job reads PUBLISH from the default branch on purpose:
       # whether this project publishes at all is a decision about now, not a
       # property of whatever old commit is being built.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Read the PUBLISH file
         id: check
@@ -162,7 +162,7 @@ jobs:
       #
       # On a scheduled run there is no input and this is the default branch,
       # which is what the nightly rebuild is for.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
 
