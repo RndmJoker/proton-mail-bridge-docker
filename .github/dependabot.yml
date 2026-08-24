@@ -73,9 +73,9 @@ updates:
         patterns: ["*"]
     open-pull-requests-limit: 3
     commit-message:
-      # Matches the commit format in git-workflow.md, which has `chore` as a
-      # prefix. The pull request title still needs fixing by hand before a
-      # merge, see above.
+      # Matches this project's commit format, which uses `chore` as the
+      # prefix for dependency and maintenance work. The pull request title
+      # still needs fixing by hand before a merge, see above.
       prefix: chore
 
   # ---------------------------------------------------------------------

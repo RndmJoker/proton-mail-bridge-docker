@@ -29,9 +29,11 @@ name: Publish
 # wherever the input points.
 #
 # Tags on commits that predate this change still carry their own copy of the
-# old trigger, and nothing here can reach those. That gap is covered outside
-# GitHub, in tag-release.sh, which is the one place that sees both the target
-# commit and main. See git-workflow.md in the rules repository.
+# old trigger, and nothing here can reach those. That gap is closed outside
+# GitHub, by the tooling that creates the tags: it is the only place that sees
+# the target commit and main at the same time, so it is where the comparison
+# belongs. It refuses to tag an older commit whose tag-triggered workflows
+# differ from the ones on main, unless they are switched off at GitHub first.
 #
 # A new upstream bridge release does NOT trigger a build either. That is
 # .github/workflows/upstream.yml, and all it does is file an issue: what Proton

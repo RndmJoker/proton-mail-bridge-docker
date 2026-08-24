@@ -221,7 +221,7 @@ func exposeSetup(options *setup.Options, certDir string) error {
 	// The token is printed here on purpose. It is generated fresh every time
 	// this page starts, and the page only starts while no account is signed
 	// in, so what is in the log stops working the moment the sign-in
-	// succeeds. See security.md.
+	// succeeds.
 	logf("Access token: %s", token)
 	logf("")
 
