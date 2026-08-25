@@ -99,3 +99,78 @@ func WaitForAccounts(ctx context.Context, client bridgepb.BridgeClient, timeout,
 		}
 	}
 }
+
+// EveryAccountLocked reports whether the bridge named accounts and every one of
+// them is locked.
+//
+// Locked means one of two things and the state cannot tell them apart:
+//
+//   - The bridge is opening its vault. Every account is locked for a moment on
+//     the way to connected, and it ends by itself.
+//   - The account waits for its mailbox password. That ends only when somebody
+//     types it, so the sign-in page has to come up.
+//
+// The enum has three values and none of them is "loading", so a single sample
+// cannot answer which case this is. What distinguishes them is time: the first
+// resolves on its own, the second does not.
+//
+// Accounts that are signed out are deliberately not covered. A signed-out
+// account is a final answer rather than a stage, and waiting for one to become
+// connected would delay exactly the case that needs the page most.
+func EveryAccountLocked(users *bridgepb.UserListResponse) bool {
+	list := users.GetUsers()
+	if len(list) == 0 {
+		return false
+	}
+
+	for _, user := range list {
+		if user.GetState() != bridgepb.UserState_LOCKED {
+			return false
+		}
+	}
+
+	return true
+}
+
+// WaitForSettled blocks while every account is locked, and reports whether the
+// accounts reached a state worth acting on before the timeout ran out.
+//
+// True means the answer a caller gets now is trustworthy: either something is
+// connected, or something is signed out, or there are no accounts at all. False
+// means the wait was given up on and every account is still locked, which is
+// then taken at face value: a mailbox password is wanted and the page has to
+// come up.
+//
+// This is what #35 was actually about. The first fix distinguished "the bridge
+// has not answered yet" from "there are no accounts". What it did not
+// distinguish is "an account that is still unlocking" from "an account that
+// wants a password", so a restart with a connected account still ran the
+// sign-in page for a few seconds and wrote a fresh access token to the log.
+// Measured on 2026-08-24 against 0.5.15, four restarts of a container with one
+// connected account: windows of 4 s, 5 s, 1 s and 4.167 s, the last at 7 ms
+// resolution. Before the first fix it was 6.9 s, so that fix shortened the
+// window without closing it.
+//
+// Errors are retried rather than returned, for the same reason as in
+// WaitForAccounts: a call that fails while the bridge is coming up says nothing
+// about the accounts.
+func WaitForSettled(ctx context.Context, client bridgepb.BridgeClient, timeout, interval time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+
+	for {
+		users, err := client.GetUserList(ctx, &emptypb.Empty{})
+		if err == nil && !EveryAccountLocked(users) {
+			return true
+		}
+
+		if !time.Now().Before(deadline) {
+			return false
+		}
+
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(interval):
+		}
+	}
+}

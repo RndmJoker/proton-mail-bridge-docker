@@ -11,6 +11,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/bridgeclient"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/config"
+	"github.com/RndmJoker/proton-mail-bridge-docker/internal/control"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/login"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/setup"
 	"golang.org/x/term"
@@ -31,6 +33,11 @@ const (
 	stepTimeout  = 3 * time.Minute
 	pollInterval = 500 * time.Millisecond
 )
+
+// How long the bridge is given to say whether an account is connected, when the
+// setup server has gone away mid sign-in. One local gRPC call to a bridge that
+// is by then up and running, so this is a backstop rather than a budget.
+const bridgeAskTimeout = 10 * time.Second
 
 func main() {
 	if err := run(); err != nil {
@@ -108,8 +115,11 @@ func drive(client *setup.Client, status login.Status) error {
 				return err
 			}
 
-			if status, err = client.TOTP(code); err != nil {
-				return err
+			status, err = client.TOTP(code)
+			if err != nil {
+				if status, err = resolveUnreachable(err); err != nil {
+					return err
+				}
 			}
 
 			clear(code)
@@ -122,8 +132,11 @@ func drive(client *setup.Client, status login.Status) error {
 				return err
 			}
 
-			if status, err = client.MailboxPassword(password); err != nil {
-				return err
+			status, err = client.MailboxPassword(password)
+			if err != nil {
+				if status, err = resolveUnreachable(err); err != nil {
+					return err
+				}
 			}
 
 			clear(password)
@@ -182,8 +195,10 @@ func askCredentials(client *setup.Client, reader *bufio.Reader) (login.Status, e
 
 	clear(password)
 
+	// For an account with no further question this is already the last step, so
+	// the page can be the thing that goes away here.
 	if err != nil {
-		return login.Status{}, err
+		return resolveUnreachable(err)
 	}
 
 	fmt.Println("Talking to Proton...")
@@ -212,11 +227,77 @@ func waitForChange(client *setup.Client, current login.Status) (login.Status, er
 
 		next, err := client.Status()
 		if err != nil {
-			return login.Status{}, err
+			return resolveUnreachable(err)
 		}
 
 		current = next
 	}
+}
+
+// resolveUnreachable turns a setup server that has gone away into an answer.
+//
+// The page shutting itself down is how a successful sign-in ends: bridge-control
+// watches the bridge's event stream and stops the server as soon as an account
+// is connected. So a call that cannot reach it any more is very probably the
+// success this program was waiting for, and reporting a failure there is what
+// #35 left behind. Measured on 2026-08-24: a sign-in that had just succeeded
+// ended with "connection refused" on the next status poll, 500 ms later.
+//
+// Confirmed rather than assumed. The page could have stopped for another
+// reason, and announcing a sign-in that did not happen would be worse than the
+// bug being fixed. The bridge is the authority and it is reachable from inside
+// this container over the same socket proton-info uses.
+//
+// Any error that is not an unreachable server is passed through untouched.
+func resolveUnreachable(err error) (login.Status, error) {
+	if !errors.Is(err, setup.ErrUnreachable) {
+		return login.Status{}, err
+	}
+
+	done, askErr := confirmSignedIn()
+	if askErr != nil {
+		return login.Status{}, fmt.Errorf("%w, and the bridge could not say whether the sign-in finished: %w", err, askErr)
+	}
+
+	if !done {
+		return login.Status{}, err
+	}
+
+	return login.Status{State: login.StateSucceeded}, nil
+}
+
+// confirmSignedIn is the question resolveUnreachable asks, as a variable so a
+// test can answer it without a bridge. Nothing else reassigns it.
+var confirmSignedIn = signedIn
+
+// signedIn asks the bridge whether an account is connected.
+func signedIn() (bool, error) {
+	configPath, err := bridgeclient.ServerConfigPath()
+	if err != nil {
+		return false, err
+	}
+
+	serverConfig, err := bridgeclient.LoadServerConfig(configPath)
+	if err != nil {
+		return false, fmt.Errorf("could not read %s: %w", configPath, err)
+	}
+
+	client, err := bridgeclient.Dial(serverConfig)
+	if err != nil {
+		return false, err
+	}
+
+	defer func() { _ = client.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), bridgeAskTimeout)
+	defer cancel()
+
+	needed, reported, err := control.AccountsNeedSignIn(ctx, client)
+	if err != nil {
+		return false, err
+	}
+
+	return reported && !needed, nil
 }
 
 // prompt reads a line that may be shown on screen.

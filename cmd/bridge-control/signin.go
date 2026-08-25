@@ -45,6 +45,23 @@ const accountsReportedTimeout = 30 * time.Second
 // How often to ask again while waiting for that.
 const accountsReportedInterval = time.Second
 
+// How long every account is allowed to stay locked before that is taken to mean
+// a mailbox password is wanted.
+//
+// A locked account is both a stage and a destination. On the way to connected
+// every account is locked for a moment while the vault opens; an account that
+// wants its mailbox password is locked until somebody types it. The enum has no
+// third value to tell those apart, so the only thing that separates them is
+// whether it resolves on its own.
+//
+// 15 seconds, against windows of 1 to 5 seconds measured on 2026-08-24 across
+// four restarts. The cost is again lopsided, and this time it falls the other
+// way round: it is only ever spent in full by an account that really does want
+// its mailbox password, and that wait ends with a person typing. Being wrong in
+// the other direction means the sign-in page running on every restart of a
+// container that has nothing to sign in, which is what #35 reported.
+const accountsSettledTimeout = 15 * time.Second
+
 // runSignIn keeps the sign-in page available whenever it is needed, and only
 // then.
 //
@@ -75,6 +92,20 @@ func runSignIn(ctx context.Context, cfg config.Config, client *bridgeclient.Clie
 	// empty list look identical afterwards and only one of them is fine.
 	if vaultExists && !control.WaitForAccounts(ctx, client, accountsReportedTimeout, accountsReportedInterval) {
 		logf("The bridge named no account within %s, treating the vault as empty.", accountsReportedTimeout)
+	}
+
+	// And then the same problem one level down. The bridge has named an account
+	// by now, but for the first seconds it is locked rather than connected, and
+	// a locked account is how one waiting for its mailbox password looks too.
+	// Acting on the first sample ran the sign-in page for a few seconds on every
+	// restart of a container that had nothing to sign in, and wrote a fresh
+	// access token to the log each time. That is #35, which the earlier wait
+	// shortened but did not close.
+	//
+	// Said out loud when it times out, because from here on the page is about to
+	// come up and the reason should not have to be guessed.
+	if vaultExists && !control.WaitForSettled(ctx, client, accountsSettledTimeout, accountsReportedInterval) {
+		logf("Every account is still locked after %s, so a mailbox password is wanted.", accountsSettledTimeout)
 	}
 
 	for ctx.Err() == nil {
