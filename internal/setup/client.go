@@ -16,6 +16,15 @@ import (
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/login"
 )
 
+// ErrUnreachable is returned when the setup server did not answer at all, as
+// opposed to answering with a refusal.
+//
+// The distinction is not cosmetic. The setup server shutting itself down is how
+// a successful sign-in ends, so a caller driving one has to be able to tell
+// "the page is gone because it is done" from "the call failed". Without that,
+// proton-login reported a failure for a sign-in that had just succeeded.
+var ErrUnreachable = errors.New("the setup server is not reachable")
+
 // clientTimeout bounds a call to the setup server. Everything happens over
 // loopback inside one container, so anything slower means something is wrong
 // rather than slow. Generous enough for the bridge to talk to Proton first.
@@ -131,7 +140,7 @@ func (c *Client) call(method, path string, body *credentials) (login.Status, err
 
 	response, err := c.http.Do(request)
 	if err != nil {
-		return login.Status{}, fmt.Errorf("could not reach the setup server at %s: %w", c.baseURL, err)
+		return login.Status{}, fmt.Errorf("%w at %s: %w", ErrUnreachable, c.baseURL, err)
 	}
 
 	defer func() { _ = response.Body.Close() }()
