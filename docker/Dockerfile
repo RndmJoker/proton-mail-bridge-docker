@@ -25,7 +25,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1: build the bridge core from source
 # ---------------------------------------------------------------------------
-FROM golang:1.26-bookworm AS build
+FROM golang:1.27-bookworm AS build
 
 # Both are supplied by the caller from docker/bridge-version. No defaults on
 # purpose: a missing value must fail the build, not silently produce an image
@@ -82,7 +82,7 @@ RUN make build-nogui \
 # ---------------------------------------------------------------------------
 # Stage 2: build this project's own binaries
 # ---------------------------------------------------------------------------
-FROM golang:1.26-bookworm AS control
+FROM golang:1.27-bookworm AS control
 
 # unzip is for the protoc release archive, which is only published as a zip.
 # Everything else the generator needs is already in the Go image.
