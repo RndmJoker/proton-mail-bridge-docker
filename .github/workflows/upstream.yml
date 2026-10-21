@@ -65,12 +65,18 @@ jobs:
       # minted per run and expires within the hour.
       #
       # `repositories` narrows the token further, to the two it needs.
+      #
+      # `client-id` rather than `app-id`, which v3.1.0 deprecated and a later
+      # major version may drop. The secret still holds the numeric App ID, and
+      # that is fine: the action passes either input unchanged as the issuer
+      # of the JWT it signs, and GitHub accepts the App ID or the client ID
+      # there.
       - name: Get a token for the bot
         if: steps.upstream.outputs.differs == 'true'
         id: bot
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.WATCHER_APP_ID }}
+          client-id: ${{ secrets.WATCHER_APP_ID }}
           private-key: ${{ secrets.WATCHER_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: |
