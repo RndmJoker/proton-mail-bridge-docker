@@ -138,6 +138,22 @@ expect_fence() {
     fi
 }
 
+expect_output_contains() {
+    if printf '%s\n' "$output" | grep -qF -- "$1"; then
+        ok "output contains \"$1\""
+    else
+        fail "output does not contain \"$1\""
+    fi
+}
+
+expect_calls_contain() {
+    if grep -qsF -- "$1" "$stub/calls"; then
+        ok "gh was called with \"$1\""
+    else
+        fail "gh was never called with \"$1\""
+    fi
+}
+
 expect_body_contains() {
     if grep -qsF -- "$2" "$stub/body-$1"; then
         ok "body $1 contains \"$2\""
@@ -192,6 +208,22 @@ STUB_LIST_ANSWER='[{"title":"[Feature] Update to Proton Bridge 9.9.99"}]' \
     run_case "only a similar title exists" "nothing new"
 expect_status 0
 expect_creates 2
+
+# A failed search is not an answer of "none". Before this was handled, the
+# empty count compared as "not filed yet" and both issues were created anyway.
+STUB_LIST_FAILS=1 run_case "the duplicate search fails" "nothing new"
+expect_status 1
+expect_creates 0
+expect_output_contains "Could not search"
+
+# gh succeeded but printed nothing jq could count.
+STUB_LIST_ANSWER="" run_case "the duplicate search answers nothing" "nothing new"
+expect_status 1
+expect_creates 0
+expect_output_contains "returned no count"
+
+run_case "the search asks for more than the default 30 results" "nothing new"
+expect_calls_contain "--limit 100"
 
 # --------------------------------------------------------------------------
 

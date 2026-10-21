@@ -97,10 +97,25 @@ ${fence}"
 # match afterwards. The title goes into jq through --arg rather than being
 # pasted into the filter: it is built from an upstream tag, and a value from
 # somewhere else does not belong in the text of an expression.
+#
+# A search that fails is not an answer of "none". This runs as the condition
+# of an `if`, where set -e does not apply, so a failed request would otherwise
+# turn into an empty count and a duplicate issue. It stops the script instead:
+# a missing issue gets filed by the next run, a duplicate stays.
+#
+# The limit is raised because the fuzzy search ranks loosely, and the default
+# of 30 results could leave the exact title out.
 already_filed() {
     local repo="$1" title="$2" found
-    found="$(gh issue list --repo "$repo" --state all --search "$title in:title" --json title \
-        | jq --arg t "$title" '[.[] | select(.title == $t)] | length')"
+    if ! found="$(gh issue list --repo "$repo" --state all --limit 100 --search "$title in:title" --json title \
+        | jq --arg t "$title" '[.[] | select(.title == $t)] | length')"; then
+        echo "::error::Could not search $repo for \"$title\". Not filing it rather than risking a duplicate." >&2
+        exit 1
+    fi
+    if ! [[ "$found" =~ ^[0-9]+$ ]]; then
+        echo "::error::Searching $repo for \"$title\" returned no count. Not filing it rather than risking a duplicate." >&2
+        exit 1
+    fi
     [ "$found" -gt 0 ]
 }
 
