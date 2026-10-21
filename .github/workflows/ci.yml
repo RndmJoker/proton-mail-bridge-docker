@@ -44,6 +44,10 @@ jobs:
       - name: Test the upstream issue filer
         run: bash scripts/ci/test-file-upstream-issues.sh
 
+      # Every job that sets up Go asks this script which release to install.
+      - name: Test the Go version picker
+        run: bash scripts/ci/test-go-version.sh
+
   dockerfile:
     name: Dockerfile
     runs-on: ubuntu-latest
@@ -77,10 +81,20 @@ jobs:
             echo "No Go module yet, tests skipped."
           fi
 
+      # Not go-version-file: setup-go would install the exact patch release
+      # go.mod names, which since the go directive became 1.26.0 is an old
+      # one. scripts/ci/go-version.sh has the details; the same pair of
+      # steps is in every job below that sets up Go.
+      - name: Which Go
+        id: go
+        if: steps.mod.outputs.present == 'true'
+        run: bash scripts/ci/go-version.sh
+
       - uses: actions/setup-go@v7
         if: steps.mod.outputs.present == 'true'
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.go.outputs.minor }}
+          check-latest: true
 
       # Before generating, on purpose: this is the module as Dependabot sees
       # it, committed files only. Dependabot runs go mod tidy after every
@@ -110,9 +124,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The newest patch of the minor release go.mod names, see the Go job.
+      # Here it matters most: govulncheck reports the standard library of
+      # the Go it runs with.
+      - name: Which Go
+        id: go
+        run: bash scripts/ci/go-version.sh
+
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.go.outputs.minor }}
+          check-latest: true
 
       # govulncheck compiles what it scans, and nothing here compiles without
       # the generated client.
@@ -187,10 +209,17 @@ jobs:
       # Here rather than in its own job because the binary only exists after
       # the build, and the build is three quarters of an hour. This adds about
       # a minute to it.
+      # The newest patch of the minor release go.mod names, see the Go job.
+      - name: Which Go
+        id: go
+        if: hashFiles('docker/Dockerfile') != ''
+        run: bash scripts/ci/go-version.sh
+
       - uses: actions/setup-go@v7
         if: hashFiles('docker/Dockerfile') != ''
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.go.outputs.minor }}
+          check-latest: true
 
       - name: Scan the bridge binary
         if: hashFiles('docker/Dockerfile') != ''

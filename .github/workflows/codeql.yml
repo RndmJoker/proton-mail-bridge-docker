@@ -53,10 +53,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The newest patch of the minor release go.mod names rather than the
+      # exact one written there. scripts/ci/go-version.sh has the reason.
+      - name: Which Go
+        id: go
+        if: matrix.language == 'go'
+        run: bash scripts/ci/go-version.sh
+
       - uses: actions/setup-go@v7
         if: matrix.language == 'go'
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.go.outputs.minor }}
+          check-latest: true
 
       # The one line this whole workflow exists for. Nothing here compiles
       # without it, and CodeQL has to compile Go to analyse it.
