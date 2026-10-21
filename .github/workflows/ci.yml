@@ -82,6 +82,16 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Before generating, on purpose: this is the module as Dependabot sees
+      # it, committed files only. Dependabot runs go mod tidy after every
+      # update and gives up on any error, so a module that only tidies once
+      # the client has been generated cannot be updated at all. That was the
+      # state from 2026-08-18 on. internal/bridgepb/doc.go is what makes this
+      # pass, see proto/README.md.
+      - name: Tidy as committed
+        if: steps.mod.outputs.present == 'true'
+        run: go mod tidy -diff
+
       # The gRPC client is generated rather than committed, so nothing here
       # compiles until this has run. See proto/README.md for why.
       - name: Generate the gRPC client

@@ -3,7 +3,9 @@
 # Generates the gRPC client from proto/bridge.proto into internal/bridgepb/.
 #
 # The result is deliberately not checked in. Generated code in a repository
-# drifts from its source and nobody notices; a build step cannot.
+# drifts from its source and nobody notices; a build step cannot. The one file
+# in internal/bridgepb/ that is checked in, doc.go, is written by hand and is
+# left alone here; its comment says why it exists.
 #
 # Everything is pinned. An unpinned protoc would produce different output on
 # every machine, and the first sign of that would be a diff nobody asked for.
@@ -91,8 +93,11 @@ main() {
 
     log "Generating $OUT_DIR from proto/bridge.proto"
 
-    rm -rf "$OUT_DIR"
+    # Only what protoc produces is removed, so that a file it no longer
+    # writes does not linger. Removing the directory would take doc.go with
+    # it, and a commit made after that would break Dependabot again.
     mkdir -p "$OUT_DIR"
+    rm -f "$OUT_DIR"/*.pb.go
 
     # M<file>=<path>;<name> overrides the go_package option inside
     # bridge.proto. Both halves are needed: the path decides where the files
@@ -116,7 +121,7 @@ main() {
         bridge.proto
 
     log "Done:"
-    printf '  %s\n' "$OUT_DIR"/*
+    printf '  %s\n' "$OUT_DIR"/*.pb.go
 }
 
 main "$@"

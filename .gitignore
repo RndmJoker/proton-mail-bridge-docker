@@ -7,8 +7,12 @@
 # Pinned tools fetched by scripts/generate-proto.sh
 /.tools/
 
-# Generated gRPC code. Deliberately not versioned, see proto/README.md.
-/internal/bridgepb/
+# Generated gRPC code. Deliberately not versioned, see proto/README.md. The
+# directory itself is: internal/bridgepb/doc.go is written by hand and keeps
+# the package resolvable before anything has been generated. A pattern for the
+# directory with an exception for doc.go would not work, because git does not
+# look inside a directory it ignores.
+/internal/bridgepb/*.pb.go
 
 # Credentials and local configuration
 .env

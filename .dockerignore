@@ -17,8 +17,9 @@
 # platform it is building on.
 /.tools
 
-# Generated inside the build.
-/internal/bridgepb
+# Generated inside the build. Only the generated files: doc.go next to them is
+# checked in and part of the package.
+/internal/bridgepb/*.pb.go
 
 # Local state and credentials. None of this should ever exist in a checkout,
 # and if it does it must not travel into an image.

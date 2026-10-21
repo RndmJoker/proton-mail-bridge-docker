@@ -26,3 +26,16 @@ bash scripts/generate-proto.sh
 The result lands in `internal/bridgepb/` and is **not** checked in. Generated
 code in a repository drifts from its source without anyone noticing; a build
 step cannot.
+
+The one file there that is checked in is `internal/bridgepb/doc.go`, written
+by hand. It holds no generated code; it keeps the package path resolvable
+before anything has been generated. That matters to every tool that reads the
+module as committed. Dependabot is the one that made it necessary: it runs
+`go mod tidy` after every update, unconditionally, and tidy fails on an import
+of a package that does not exist. Without the file every Go update here failed
+from 2026-08-18 on. The `Go` job in CI runs `go mod tidy -diff` before
+generating, which is the same view, so a change that breaks this fails there
+first.
+
+If a build stops in `doc.go` with `undefined`, the generated files are
+missing: run the script above.
