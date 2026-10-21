@@ -171,8 +171,10 @@ changed. A renamed field does not fail the build; it turns into a call that
 quietly does nothing, and the first sign of it is a mail client that stopped
 working.
 
-Nothing is rebuilt or published automatically for this. Publishing is a tag,
-and a tag is a decision.
+Nothing is rebuilt or published automatically for this. The nightly rebuild
+builds what is pinned, and a tag publishes nothing, see
+[Releases](https://github.com/$BRIDGE_REPO#releases). Raising the pin is a pull
+request, and that is the decision.
 
 ### Changelog, as published by Proton
 

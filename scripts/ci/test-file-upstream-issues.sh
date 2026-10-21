@@ -174,6 +174,9 @@ expect_creates 2
 expect_fence 1 3
 expect_fence 2 3
 expect_body_contains 1 "BRIDGE-000: A thing that was broken works again."
+# Until 2026-08-01 pushing a tag published an image. The issue said so, and
+# kept saying so after it stopped being true; see #40.
+expect_body_contains 1 "a tag publishes nothing"
 
 run_case "empty changelog" ""
 expect_status 0
