@@ -37,6 +37,13 @@ jobs:
           # shellcheck disable=SC2086
           ./shellcheck-v0.11.0/shellcheck $files
 
+      # The upstream watcher's reporting path runs only on the day Proton
+      # publishes something, and its first real run files issues in two
+      # repositories. It went live untested and failed on every run from
+      # 2026-08-27 on. This runs it on every change, against a stand-in for gh.
+      - name: Test the upstream issue filer
+        run: bash scripts/ci/test-file-upstream-issues.sh
+
   dockerfile:
     name: Dockerfile
     runs-on: ubuntu-latest

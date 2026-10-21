@@ -65,7 +65,18 @@ if [ "${#changelog}" -gt "$CHANGELOG_LIMIT" ]; then
     changelog="${changelog:0:$CHANGELOG_LIMIT}"$'\n\n[truncated, see the release page]'
 fi
 
-longest_run="$(printf '%s' "$changelog" | grep -o '`\+' | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')"
+# Measured in awk alone, without grep in front of it. `grep -o` exits 1 when it
+# finds nothing, and under pipefail that silently ended this script for every
+# changelog without a backtick in it, which is all of Proton's so far.
+longest_run="$(printf '%s\n' "$changelog" | awk '
+    {
+        while (match($0, /`+/)) {
+            if (RLENGTH > m) m = RLENGTH
+            $0 = substr($0, RSTART + RLENGTH)
+        }
+    }
+    END { print m + 0 }
+')"
 fence_length=3
 if [ "$longest_run" -ge 3 ]; then
     fence_length=$((longest_run + 1))
