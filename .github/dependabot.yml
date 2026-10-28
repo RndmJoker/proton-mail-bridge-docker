@@ -11,17 +11,17 @@
 # ## What had to change to allow this
 #
 # Dependabot could not create a branch here until 2026-08-01. The `branch
-# naming` ruleset includes `~ALL` and excludes only the nine allowed prefixes,
-# and `dependabot/` was not one of them, so every attempt failed at the server
+# naming` ruleset includes `~ALL` and excludes only the allowed prefixes, and
+# `dependabot/` was not one of them, so every attempt failed at the server
 # before a pull request existed - with nothing in the repository to show for
 # it. `refs/heads/dependabot/**` and four deeper levels are excluded now.
 #
-# The deeper levels are not decoration: a gomod branch is
+# The deeper levels are not decoration: a gomod branch can be
 # `dependabot/go_modules/golang.org/x/net-0.56.0`, four segments past the
-# prefix, and the existing entries show that `**` covers one level here -
-# otherwise `feature/**/**` would not sit next to `feature/**`. Verified by
-# pushing that exact name, and by checking that an unlisted prefix is still
-# refused with GH013.
+# prefix, and in a ruleset `**` covers exactly one level. Verified by pushing
+# that exact name, and by checking that an unlisted prefix is still refused
+# with GH013. Since 2026-10-28 every other branch is named after a commit
+# type and is one level deep, such as `build/raise-protobuf`.
 #
 # ## What these pull requests cannot do, and how to handle that
 #
@@ -82,10 +82,11 @@ updates:
         patterns: ["*"]
     open-pull-requests-limit: 3
     commit-message:
-      # Matches this project's commit format, which uses `chore` as the
-      # prefix for dependency and maintenance work. The pull request title
-      # still needs fixing by hand before a merge, see above.
-      prefix: chore
+      # Matches this project's commit format, Conventional Commits with
+      # `build` for dependencies and base images and `ci` for anything under
+      # .github/. Until 2026-10-28 all three used `chore`. The pull request
+      # title still needs fixing by hand before a merge, see above.
+      prefix: build
 
   # ---------------------------------------------------------------------
   # GitHub Actions
@@ -106,7 +107,7 @@ updates:
         patterns: ["*"]
     open-pull-requests-limit: 3
     commit-message:
-      prefix: chore
+      prefix: ci
 
   # ---------------------------------------------------------------------
   # Base images
@@ -124,4 +125,4 @@ updates:
       timezone: Etc/UTC
     open-pull-requests-limit: 2
     commit-message:
-      prefix: chore
+      prefix: build
