@@ -22,7 +22,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO_ROOT
 
 readonly PROTOC_VERSION=35.1
-readonly PROTOC_GEN_GO_VERSION=v1.36.11
+# Same version as google.golang.org/protobuf in go.mod, so that the generator
+# and the runtime it generates for move together. Dependabot raises the one in
+# go.mod and cannot see this one.
+readonly PROTOC_GEN_GO_VERSION=v1.36.12
 readonly PROTOC_GEN_GO_GRPC_VERSION=v1.6.2
 
 readonly TOOLS_DIR="${TOOLS_DIR:-$REPO_ROOT/.tools}"
