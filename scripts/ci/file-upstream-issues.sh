@@ -65,7 +65,18 @@ if [ "${#changelog}" -gt "$CHANGELOG_LIMIT" ]; then
     changelog="${changelog:0:$CHANGELOG_LIMIT}"$'\n\n[truncated, see the release page]'
 fi
 
-longest_run="$(printf '%s' "$changelog" | grep -o '`\+' | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')"
+# Measured in awk alone, without grep in front of it. `grep -o` exits 1 when it
+# finds nothing, and under pipefail that silently ended this script for every
+# changelog without a backtick in it, which is all of Proton's so far.
+longest_run="$(printf '%s\n' "$changelog" | awk '
+    {
+        while (match($0, /`+/)) {
+            if (RLENGTH > m) m = RLENGTH
+            $0 = substr($0, RSTART + RLENGTH)
+        }
+    }
+    END { print m + 0 }
+')"
 fence_length=3
 if [ "$longest_run" -ge 3 ]; then
     fence_length=$((longest_run + 1))
@@ -86,10 +97,25 @@ ${fence}"
 # match afterwards. The title goes into jq through --arg rather than being
 # pasted into the filter: it is built from an upstream tag, and a value from
 # somewhere else does not belong in the text of an expression.
+#
+# A search that fails is not an answer of "none". This runs as the condition
+# of an `if`, where set -e does not apply, so a failed request would otherwise
+# turn into an empty count and a duplicate issue. It stops the script instead:
+# a missing issue gets filed by the next run, a duplicate stays.
+#
+# The limit is raised because the fuzzy search ranks loosely, and the default
+# of 30 results could leave the exact title out.
 already_filed() {
     local repo="$1" title="$2" found
-    found="$(gh issue list --repo "$repo" --state all --search "$title in:title" --json title \
-        | jq --arg t "$title" '[.[] | select(.title == $t)] | length')"
+    if ! found="$(gh issue list --repo "$repo" --state all --limit 100 --search "$title in:title" --json title \
+        | jq --arg t "$title" '[.[] | select(.title == $t)] | length')"; then
+        echo "::error::Could not search $repo for \"$title\". Not filing it rather than risking a duplicate." >&2
+        exit 1
+    fi
+    if ! [[ "$found" =~ ^[0-9]+$ ]]; then
+        echo "::error::Searching $repo for \"$title\" returned no count. Not filing it rather than risking a duplicate." >&2
+        exit 1
+    fi
     [ "$found" -gt 0 ]
 }
 
@@ -145,8 +171,10 @@ changed. A renamed field does not fail the build; it turns into a call that
 quietly does nothing, and the first sign of it is a mail client that stopped
 working.
 
-Nothing is rebuilt or published automatically for this. Publishing is a tag,
-and a tag is a decision.
+Nothing is rebuilt or published automatically for this. The nightly rebuild
+builds what is pinned, and a tag publishes nothing, see
+[Releases](https://github.com/$BRIDGE_REPO#releases). Raising the pin is a pull
+request, and that is the decision.
 
 ### Changelog, as published by Proton
 

@@ -54,6 +54,15 @@ updates:
   # Only what this repository declares. The bridge's own dependency tree
   # comes from Proton's go.mod and is not reachable from here - that is what
   # the binary scan in ci.yml looks at, see #47.
+  #
+  # Every update here ends in `go mod tidy`. That is built into Dependabot,
+  # there is no option to skip it, and since mid-2026 any error in it aborts
+  # the run. tidy needs every imported package to exist, and the gRPC client
+  # is generated rather than committed, so internal/bridgepb/doc.go is
+  # committed in its place to keep the package path resolvable. Without it
+  # every run failed from 2026-08-18 on, the first week there was anything to
+  # update. proto/README.md has the details; the "Go" job in ci.yml checks
+  # the same thing with `go mod tidy -diff` before generating.
   - package-ecosystem: gomod
     directory: /
     schedule:

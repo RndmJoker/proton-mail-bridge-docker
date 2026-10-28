@@ -10,8 +10,8 @@ name: CodeQL
 #   Some packages could not be found: .../internal/bridgepb
 #   ...source files that use them may only be partially analyzed.
 #
-# The packages that import it are bridgeclient, control, login, setup and info,
-# plus all three binaries. That is the part worth scanning: the gRPC client, the
+# The packages that depend on it are bridgeclient, control, login and setup,
+# plus all five binaries. That is the part worth scanning: the gRPC client, the
 # sign-in state machine, and an HTTPS server that accepts a Proton password. All
 # of it had been analysed in part, and nothing said so except a warning on a
 # settings page.
@@ -53,10 +53,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The newest patch of the minor release go.mod names rather than the
+      # exact one written there. scripts/ci/go-version.sh has the reason.
+      - name: Which Go
+        id: go
+        if: matrix.language == 'go'
+        run: bash scripts/ci/go-version.sh
+
       - uses: actions/setup-go@v7
         if: matrix.language == 'go'
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.go.outputs.minor }}
+          check-latest: true
 
       # The one line this whole workflow exists for. Nothing here compiles
       # without it, and CodeQL has to compile Go to analyse it.
