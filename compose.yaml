@@ -14,9 +14,9 @@
 
 services:
   proton-bridge:
-    # NOTHING IS PUBLISHED YET. Until the first release, build it yourself -
-    # see "Building it yourself" in the readme - and change this to whatever
-    # you tagged:
+    # Published on ghcr.io and Docker Hub. To build it yourself instead - see
+    # "Building it yourself" in the readme - change this to whatever you
+    # tagged:
     #
     #   image: proton-mail-bridge:local
     image: ghcr.io/rndmjoker/proton-mail-bridge-docker:3.27

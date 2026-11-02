@@ -72,7 +72,7 @@ Three things that cover different ground, and none of them replaces another:
 
 ## Where the images are
 
-**Nowhere yet.** Nothing is published while the first release is being finished, so everything in this section describes how it will work rather than something you can pull today. [Build it yourself](#building-it-yourself) in the meantime.
+**Published since 2026-11-02**, and rebuilt every night from `main`. Every version so far is a pre-release, see [Status](#status), so read what changed before you update a container you rely on. Or [build it yourself](#building-it-yourself).
 
 Two registries, the same image in both:
 
