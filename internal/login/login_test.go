@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/bridgepb"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // stubClient records the login calls. It embeds the generated interface so
@@ -23,6 +28,80 @@ type stubClient struct {
 	loginCallCount int
 
 	err error
+
+	// The account the bridge reports once a sign-in finished. Read and
+	// switched from the goroutine that settles the mode, so behind a lock.
+	mu        sync.Mutex
+	splitMode bool
+	setCalls  int
+	userErr   error
+
+	// hold, when set, keeps GetUser waiting until it is closed, so a test can
+	// look at the session while the mode is still being settled.
+	hold chan struct{}
+}
+
+func (s *stubClient) GetUser(_ context.Context, in *wrapperspb.StringValue, _ ...grpc.CallOption) (*bridgepb.User, error) {
+	if s.hold != nil {
+		<-s.hold
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.userErr != nil {
+		return nil, s.userErr
+	}
+
+	return &bridgepb.User{
+		Id:        in.GetValue(),
+		Username:  "someone",
+		State:     bridgepb.UserState_CONNECTED,
+		SplitMode: s.splitMode,
+	}, nil
+}
+
+func (s *stubClient) SetUserSplitMode(_ context.Context, in *bridgepb.UserSplitModeRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.setCalls++
+	s.splitMode = in.GetActive()
+
+	return &emptypb.Empty{}, nil
+}
+
+func (s *stubClient) switches() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.setCalls
+}
+
+// settled waits until the session is done with the mode of a finished
+// sign-in, and returns where it ended up.
+func settled(t *testing.T, session *Session) Status {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+
+	for time.Now().Before(deadline) {
+		if status := session.Status(); status.State != StateSettingMode {
+			return status
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Fatal("the session never left setting_mode")
+
+	return Status{}
+}
+
+func finishedEvent(wasSignedOut bool) *bridgepb.StreamEvent {
+	return loginEvent(&bridgepb.LoginEvent{
+		Event: &bridgepb.LoginEvent_Finished{Finished: &bridgepb.LoginFinishedEvent{UserID: "u", WasSignedOut: wasSignedOut}},
+	})
 }
 
 func (s *stubClient) Login(_ context.Context, in *bridgepb.LoginRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
@@ -85,11 +164,11 @@ func errorEvent(kind bridgepb.LoginErrorType, message string) *bridgepb.StreamEv
 // why. This is the check that keeps that knowledge from getting lost.
 func TestPasswordIsBase64Encoded(t *testing.T) {
 	client := &stubClient{}
-	session := New(client)
+	session := New(client, nil)
 
 	const password = "correct horse battery staple"
 
-	if err := session.Start(context.Background(), "someone@example.invalid", []byte(password)); err != nil {
+	if err := session.Start(context.Background(), "someone@example.invalid", []byte(password), false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -111,9 +190,9 @@ func TestPasswordIsBase64Encoded(t *testing.T) {
 
 func TestStartSetsUsernameAndState(t *testing.T) {
 	client := &stubClient{}
-	session := New(client)
+	session := New(client, nil)
 
-	if err := session.Start(context.Background(), "someone@example.invalid", []byte("pw")); err != nil {
+	if err := session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -133,17 +212,15 @@ func TestStartSetsUsernameAndState(t *testing.T) {
 }
 
 func TestHappyPath(t *testing.T) {
-	session := New(&stubClient{})
+	session := New(&stubClient{}, nil)
 
-	if err := session.Start(context.Background(), "someone@example.invalid", []byte("pw")); err != nil {
+	if err := session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	session.Handle(loginEvent(&bridgepb.LoginEvent{
-		Event: &bridgepb.LoginEvent_Finished{Finished: &bridgepb.LoginFinishedEvent{UserID: "u"}},
-	}))
+	session.Handle(finishedEvent(false))
 
-	if got := session.Status().State; got != StateSucceeded {
+	if got := settled(t, session).State; got != StateSucceeded {
 		t.Fatalf("state is %q", got)
 	}
 }
@@ -151,8 +228,8 @@ func TestHappyPath(t *testing.T) {
 // An account that is already signed in is not a failure. It is the state the
 // caller wanted.
 func TestAlreadyLoggedInCountsAsSuccess(t *testing.T) {
-	session := New(&stubClient{})
-	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"))
+	session := New(&stubClient{}, nil)
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false)
 
 	session.Handle(loginEvent(&bridgepb.LoginEvent{
 		Event: &bridgepb.LoginEvent_AlreadyLoggedIn{AlreadyLoggedIn: &bridgepb.LoginFinishedEvent{UserID: "u"}},
@@ -165,9 +242,9 @@ func TestAlreadyLoggedInCountsAsSuccess(t *testing.T) {
 
 func TestTOTPFlow(t *testing.T) {
 	client := &stubClient{}
-	session := New(client)
+	session := New(client, nil)
 
-	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"))
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false)
 
 	session.Handle(loginEvent(&bridgepb.LoginEvent{
 		Event: &bridgepb.LoginEvent_TfaRequested{
@@ -192,12 +269,146 @@ func TestTOTPFlow(t *testing.T) {
 		t.Fatalf("code arrived as %q", decoded)
 	}
 
-	session.Handle(loginEvent(&bridgepb.LoginEvent{
-		Event: &bridgepb.LoginEvent_Finished{Finished: &bridgepb.LoginFinishedEvent{UserID: "u"}},
-	}))
+	session.Handle(finishedEvent(false))
 
-	if got := session.Status().State; got != StateSucceeded {
+	if got := settled(t, session).State; got != StateSucceeded {
 		t.Fatalf("state is %q", got)
+	}
+}
+
+// The answer reaches a new account, and what is reported is what the bridge
+// says afterwards rather than what was asked for.
+func TestANewAccountGetsTheAnswer(t *testing.T) {
+	client := &stubClient{}
+
+	var logged []string
+
+	session := New(client, func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) })
+
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), true)
+	session.Handle(finishedEvent(false))
+
+	status := settled(t, session)
+
+	if status.State != StateSucceeded {
+		t.Fatalf("state is %q: %s", status.State, status.Message)
+	}
+
+	if status.SplitMode == nil || !*status.SplitMode {
+		t.Errorf("split mode was asked for and the status reports %v", status.SplitMode)
+	}
+
+	if status.ModeKept {
+		t.Error("a new account is reported as having kept its mode")
+	}
+
+	if client.switches() != 1 {
+		t.Errorf("the bridge was asked to switch %d times, want once", client.switches())
+	}
+
+	if len(logged) != 1 || !strings.Contains(logged[0], "split mode, read back") {
+		t.Errorf("the log does not record the mode: %q", logged)
+	}
+}
+
+// Combined is the mode a new account already has, so answering no costs
+// nothing and must not reach the bridge as a call.
+func TestANewAccountThatStaysCombinedIsLeftAlone(t *testing.T) {
+	client := &stubClient{}
+	session := New(client, nil)
+
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false)
+	session.Handle(finishedEvent(false))
+
+	status := settled(t, session)
+
+	if status.SplitMode == nil || *status.SplitMode {
+		t.Errorf("the status reports %v, want combined", status.SplitMode)
+	}
+
+	if client.switches() != 0 {
+		t.Error("the bridge was asked to switch an account that was already in combined mode")
+	}
+}
+
+// The case that would hurt. An account that was signed out, by a password
+// change or a revoked session, comes back with its mailbox already downloaded.
+// Applying the answer to it would throw that away and fetch it all again.
+func TestAReturningAccountKeepsItsMode(t *testing.T) {
+	client := &stubClient{splitMode: true}
+	session := New(client, nil)
+
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false)
+	session.Handle(finishedEvent(true))
+
+	status := settled(t, session)
+
+	if client.switches() != 0 {
+		t.Fatal("a returning account was switched")
+	}
+
+	if !status.ModeKept {
+		t.Error("the status does not say the mode was kept")
+	}
+
+	if status.SplitMode == nil || !*status.SplitMode {
+		t.Errorf("the status reports %v, want the split mode the account had", status.SplitMode)
+	}
+}
+
+// The sign-in worked. A mode that could not be confirmed is something left to
+// do, not a failed sign-in, and calling it one would send people back to type
+// their password into a page that is about to close.
+func TestAModeThatCannotBeConfirmedIsStillASuccess(t *testing.T) {
+	client := &stubClient{userErr: errors.New("unavailable")}
+
+	var logged []string
+
+	session := New(client, func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) })
+
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), true)
+	session.Handle(finishedEvent(false))
+
+	status := settled(t, session)
+
+	if status.State != StateSucceeded {
+		t.Fatalf("state is %q", status.State)
+	}
+
+	if status.SplitMode != nil {
+		t.Error("a mode is reported that was never read")
+	}
+
+	if !strings.Contains(status.Message, "proton-mode") {
+		t.Errorf("the message does not say what to do: %q", status.Message)
+	}
+
+	if len(logged) != 1 || !strings.HasPrefix(logged[0], "WARNING") {
+		t.Errorf("the log does not warn: %q", logged)
+	}
+}
+
+// While the mode is being settled the sign-in is not over, and a second one
+// would be started on top of it.
+func TestASecondSignInWaitsForTheMode(t *testing.T) {
+	client := &stubClient{hold: make(chan struct{})}
+	session := New(client, nil)
+
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), true)
+	session.Handle(finishedEvent(false))
+
+	if got := session.Status().State; got != StateSettingMode {
+		t.Fatalf("state is %q, want setting_mode", got)
+	}
+
+	if err := session.Start(context.Background(), "other@example.invalid", []byte("pw"), false); !errors.Is(err, ErrNotExpected) {
+		t.Errorf("a second sign-in was accepted while the first was settling: %v", err)
+	}
+
+	close(client.hold)
+
+	if got := settled(t, session).State; got != StateSucceeded {
+		t.Errorf("state is %q", got)
 	}
 }
 
@@ -205,8 +416,8 @@ func TestTOTPFlow(t *testing.T) {
 // A container has no security key, so the code is the only way through and
 // this has to land in the same state as a plain TOTP request.
 func TestTfaOrFidoAsksForACode(t *testing.T) {
-	session := New(&stubClient{})
-	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"))
+	session := New(&stubClient{}, nil)
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false)
 
 	session.Handle(loginEvent(&bridgepb.LoginEvent{
 		Event: &bridgepb.LoginEvent_TfaOrFidoRequested{
@@ -223,8 +434,8 @@ func TestTfaOrFidoAsksForACode(t *testing.T) {
 // to end the attempt with an explanation rather than wait for an answer nobody
 // can give.
 func TestFidoOnlyFailsWithAnExplanation(t *testing.T) {
-	session := New(&stubClient{})
-	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"))
+	session := New(&stubClient{}, nil)
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false)
 
 	session.Handle(loginEvent(&bridgepb.LoginEvent{
 		Event: &bridgepb.LoginEvent_FidoRequested{
@@ -249,9 +460,9 @@ func TestFidoOnlyFailsWithAnExplanation(t *testing.T) {
 
 func TestTwoPasswordFlow(t *testing.T) {
 	client := &stubClient{}
-	session := New(client)
+	session := New(client, nil)
 
-	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"))
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false)
 
 	session.Handle(loginEvent(&bridgepb.LoginEvent{
 		Event: &bridgepb.LoginEvent_TwoPasswordRequested{
@@ -277,9 +488,9 @@ func TestTwoPasswordFlow(t *testing.T) {
 // again.
 func TestHumanVerification(t *testing.T) {
 	client := &stubClient{}
-	session := New(client)
+	session := New(client, nil)
 
-	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"))
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false)
 
 	session.Handle(loginEvent(&bridgepb.LoginEvent{
 		Event: &bridgepb.LoginEvent_HvRequested{
@@ -299,7 +510,7 @@ func TestHumanVerification(t *testing.T) {
 
 	// Starting again is allowed from this state, and only from here does the
 	// retry claim the stored details.
-	if err := session.Start(context.Background(), "someone@example.invalid", []byte("pw")); err != nil {
+	if err := session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -327,8 +538,8 @@ func TestErrorsAreExplained(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			session := New(&stubClient{})
-			_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"))
+			session := New(&stubClient{}, nil)
+			_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false)
 
 			session.Handle(errorEvent(test.kind, test.message))
 
@@ -352,8 +563,8 @@ func TestErrorsAreExplained(t *testing.T) {
 // A free account is the one failure where trying again is pointless, and the
 // message has to say what to do instead rather than repeat "failed".
 func TestFreePlanIsExplainedNotJustRejected(t *testing.T) {
-	session := New(&stubClient{})
-	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"))
+	session := New(&stubClient{}, nil)
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false)
 
 	session.Handle(errorEvent(bridgepb.LoginErrorType_FREE_USER, ""))
 
@@ -369,7 +580,7 @@ func TestFreePlanIsExplainedNotJustRejected(t *testing.T) {
 }
 
 func TestStepsOutOfOrderAreRefused(t *testing.T) {
-	session := New(&stubClient{})
+	session := New(&stubClient{}, nil)
 
 	if err := session.SubmitTOTP(context.Background(), []byte("123456")); !errors.Is(err, ErrNotExpected) {
 		t.Fatalf("expected ErrNotExpected, got %v", err)
@@ -385,9 +596,9 @@ func TestStepsOutOfOrderAreRefused(t *testing.T) {
 // something inexplicable.
 func TestASecondSignInIsRefusedWhileOneIsWaiting(t *testing.T) {
 	client := &stubClient{}
-	session := New(client)
+	session := New(client, nil)
 
-	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"))
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false)
 
 	session.Handle(loginEvent(&bridgepb.LoginEvent{
 		Event: &bridgepb.LoginEvent_TfaRequested{
@@ -395,7 +606,7 @@ func TestASecondSignInIsRefusedWhileOneIsWaiting(t *testing.T) {
 		},
 	}))
 
-	if err := session.Start(context.Background(), "other@example.invalid", []byte("pw")); !errors.Is(err, ErrNotExpected) {
+	if err := session.Start(context.Background(), "other@example.invalid", []byte("pw"), false); !errors.Is(err, ErrNotExpected) {
 		t.Fatalf("expected ErrNotExpected, got %v", err)
 	}
 
@@ -408,12 +619,12 @@ func TestASecondSignInIsRefusedWhileOneIsWaiting(t *testing.T) {
 // because that is what a wrong password looks like.
 func TestStartAgainAfterAFailure(t *testing.T) {
 	client := &stubClient{}
-	session := New(client)
+	session := New(client, nil)
 
-	_ = session.Start(context.Background(), "someone@example.invalid", []byte("wrong"))
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("wrong"), false)
 	session.Handle(errorEvent(bridgepb.LoginErrorType_USERNAME_PASSWORD_ERROR, ""))
 
-	if err := session.Start(context.Background(), "someone@example.invalid", []byte("right")); err != nil {
+	if err := session.Start(context.Background(), "someone@example.invalid", []byte("right"), false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -424,9 +635,9 @@ func TestStartAgainAfterAFailure(t *testing.T) {
 
 func TestAbort(t *testing.T) {
 	client := &stubClient{}
-	session := New(client)
+	session := New(client, nil)
 
-	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"))
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false)
 
 	if err := session.Abort(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -445,7 +656,7 @@ func TestAbort(t *testing.T) {
 // abort for an empty username would be a call about nobody.
 func TestAbortWithoutASignIn(t *testing.T) {
 	client := &stubClient{}
-	session := New(client)
+	session := New(client, nil)
 
 	if err := session.Abort(context.Background()); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -459,8 +670,8 @@ func TestAbortWithoutASignIn(t *testing.T) {
 // Events about anything else share the stream. Reacting to them would move the
 // sign-in on something that has nothing to do with it.
 func TestUnrelatedEventsAreIgnored(t *testing.T) {
-	session := New(&stubClient{})
-	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"))
+	session := New(&stubClient{}, nil)
+	_ = session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false)
 
 	session.Handle(&bridgepb.StreamEvent{
 		Event: &bridgepb.StreamEvent_Mail{
@@ -479,9 +690,9 @@ func TestUnrelatedEventsAreIgnored(t *testing.T) {
 
 func TestStartReportsATransportFailure(t *testing.T) {
 	client := &stubClient{err: errors.New("unavailable")}
-	session := New(client)
+	session := New(client, nil)
 
-	if err := session.Start(context.Background(), "someone@example.invalid", []byte("pw")); err == nil {
+	if err := session.Start(context.Background(), "someone@example.invalid", []byte("pw"), false); err == nil {
 		t.Fatal("expected an error, got none")
 	}
 

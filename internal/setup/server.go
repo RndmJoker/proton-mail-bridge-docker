@@ -56,6 +56,11 @@ type Options struct {
 	// Log receives progress. It must never be given a password, a token or a
 	// CSRF value.
 	Log func(format string, args ...any)
+
+	// SplitAddresses is what the question about split mode starts as, from
+	// BRIDGE_SPLIT_ADDRESSES. It is also the answer for a request that does not
+	// give one.
+	SplitAddresses bool
 }
 
 // Server is the setup page.
@@ -71,6 +76,8 @@ type Server struct {
 
 	http *http.Server
 	log  func(format string, args ...any)
+
+	splitAddresses bool
 
 	// signedIn is closed once an account is signed in, which is the signal to
 	// shut the whole thing down.
@@ -123,6 +130,8 @@ func NewServer(session *login.Session, options Options) (*Server, error) {
 		fingerprint:  material.Fingerprint,
 		log:          logf,
 		signedIn:     make(chan struct{}),
+
+		splitAddresses: options.SplitAddresses,
 	}
 
 	server.http = &http.Server{
@@ -280,6 +289,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 type credentials struct {
 	Username string `json:"username,omitempty"`
 	Secret   string `json:"secret"`
+
+	// SplitAddresses answers whether the account's addresses get a mailbox
+	// each. Only read when a sign-in starts. A pointer, so that a request
+	// without it takes the container's default rather than a silent false.
+	SplitAddresses *bool `json:"splitAddresses,omitempty"`
 }
 
 func (s *Server) decode(w http.ResponseWriter, r *http.Request) (credentials, bool) {
@@ -315,7 +329,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	secret := []byte(body.Secret)
 
-	if err := s.session.Start(r.Context(), body.Username, secret); err != nil {
+	split := s.splitAddresses
+	if body.SplitAddresses != nil {
+		split = *body.SplitAddresses
+	}
+
+	if err := s.session.Start(r.Context(), body.Username, secret, split); err != nil {
 		s.fail(w, http.StatusConflict, err)
 		return
 	}

@@ -18,8 +18,20 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/bridgepb"
+	"github.com/RndmJoker/proton-mail-bridge-docker/internal/control"
+	"google.golang.org/protobuf/types/known/wrapperspb"
+)
+
+// How long the bridge is given to report the mode of an account that has just
+// signed in, and how often to ask. It has to stop the first sync before it can
+// switch, so this is more than one call, but nothing it waits for involves
+// Proton.
+const (
+	modeTimeout  = time.Minute
+	modeInterval = 500 * time.Millisecond
 )
 
 // State is where a sign-in currently stands.
@@ -43,6 +55,11 @@ const (
 	// StateAwaitingHumanVerification means Proton wants a challenge solved in
 	// a browser. The URL is in Status.
 	StateAwaitingHumanVerification State = "awaiting_human_verification"
+
+	// StateSettingMode means the account is signed in and its mode is being set
+	// or read back. Short, but not instant: the bridge stops the first sync
+	// before it switches.
+	StateSettingMode State = "setting_mode"
 
 	// StateSucceeded means the account is signed in.
 	StateSucceeded State = "succeeded"
@@ -70,6 +87,17 @@ type Status struct {
 	// Retryable says whether starting over can help. A wrong password can be
 	// retried; a free Proton plan cannot.
 	Retryable bool `json:"retryable,omitempty"`
+
+	// SplitMode is the account's mode as the bridge reports it once the
+	// sign-in finished. Nil when it could not be read, and then Message says
+	// why.
+	SplitMode *bool `json:"splitMode,omitempty"`
+
+	// ModeKept says the account was signed in here before and kept the mode it
+	// had, whatever was answered this time. The answer is for new accounts
+	// only: one that was signed out and comes back has its mailbox already, and
+	// switching it would download all of it again.
+	ModeKept bool `json:"modeKept,omitempty"`
 }
 
 // ErrNotExpected is returned when a step arrives that does not fit the current
@@ -83,20 +111,36 @@ var ErrNotExpected = errors.New("that step is not what the bridge is waiting for
 // attempt would overwrite the first one's.
 type Session struct {
 	client bridgepb.BridgeClient
+	log    func(format string, args ...any)
 
 	mu       sync.Mutex
 	status   Status
 	username string
+
+	// splitAddresses is the answer given with this sign-in to whether the
+	// account's addresses get a mailbox each.
+	splitAddresses bool
 
 	// humanVerified records that a challenge was solved, so the retry can ask
 	// the bridge to use the details it stored.
 	humanVerified bool
 }
 
-// New returns a Session that talks to client.
-func New(client bridgepb.BridgeClient) *Session {
+// New returns a Session that talks to client. logf receives what happened to
+// an account's mode after a sign-in, and may be nil.
+//
+// The mode is logged here rather than by whoever shows the page, because the
+// page may already be gone when it is set. The bridge reports the account as
+// connected a moment before it reports the sign-in finished, and the page ends
+// on the first of the two.
+func New(client bridgepb.BridgeClient, logf func(format string, args ...any)) *Session {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+
 	return &Session{
 		client: client,
+		log:    logf,
 		status: Status{State: StateIdle},
 	}
 }
@@ -124,16 +168,20 @@ func encode(secret []byte) []byte {
 
 // Start begins a sign-in.
 //
+// splitAddresses is the answer to whether the account's addresses get a
+// mailbox each. It is applied once the sign-in finished, and only to an account
+// this bridge has not had before.
+//
 // The password is used for this call and not kept. Callers should clear their
 // own copy afterwards.
-func (s *Session) Start(ctx context.Context, username string, password []byte) error {
+func (s *Session) Start(ctx context.Context, username string, password []byte, splitAddresses bool) error {
 	s.mu.Lock()
 
 	// A previous attempt that ended does not block a new one; one that is
 	// still waiting for something does, because the bridge would lose track of
 	// the first.
 	switch s.status.State {
-	case StateAwaitingCredentials, StateAwaitingTOTP, StateAwaitingMailboxPassword:
+	case StateAwaitingCredentials, StateAwaitingTOTP, StateAwaitingMailboxPassword, StateSettingMode:
 		s.mu.Unlock()
 		return fmt.Errorf("%w: a sign-in for %q is still in progress", ErrNotExpected, s.status.Username)
 	case StateIdle, StateAwaitingHumanVerification, StateSucceeded, StateFailed:
@@ -141,6 +189,7 @@ func (s *Session) Start(ctx context.Context, username string, password []byte) e
 
 	useHV := s.humanVerified
 	s.username = username
+	s.splitAddresses = splitAddresses
 	s.status = Status{State: StateAwaitingCredentials, Username: username}
 	s.mu.Unlock()
 
@@ -297,11 +346,85 @@ func (s *Session) Handle(event *bridgepb.StreamEvent) {
 		s.humanVerified = true
 		s.mu.Unlock()
 
-	case loginEvent.GetFinished() != nil, loginEvent.GetAlreadyLoggedIn() != nil:
+	case loginEvent.GetFinished() != nil:
+		finished := loginEvent.GetFinished()
+
+		s.mu.Lock()
+		s.status = Status{State: StateSettingMode, Username: s.username}
+		s.humanVerified = false
+		split := s.splitAddresses
+		s.mu.Unlock()
+
+		// Not here, because this runs on the event stream and the switch waits
+		// for the bridge, which keeps sending events while it works.
+		go s.settleMode(finished.GetUserID(), !finished.GetWasSignedOut(), split)
+
+	case loginEvent.GetAlreadyLoggedIn() != nil:
 		s.mu.Lock()
 		s.status = Status{State: StateSucceeded, Username: s.username}
 		s.humanVerified = false
 		s.mu.Unlock()
+	}
+}
+
+// settleMode applies the answer about split mode to an account that has just
+// signed in, and records what the bridge reports afterwards.
+//
+// Only for an account the bridge did not have before. One that was signed out
+// and signs in again keeps its mailbox and its mode; applying the answer to it
+// would download the whole mailbox again for the sake of a question that was
+// about new accounts. The bridge says which case it is: wasSignedOut is true
+// when the vault already held the account (finishLogin in the upstream
+// internal/frontend/grpc/service.go).
+//
+// For a new account this is as close to "before the first sync" as the
+// interface allows. The bridge starts syncing the moment the account is added,
+// before it reports the sign-in finished, so a switch now throws away seconds
+// of download rather than a mailbox.
+//
+// A failure here does not undo the sign-in, which worked. It is reported as a
+// sign-in that succeeded with something left to do, and the message names the
+// command that does it.
+func (s *Session) settleMode(userID string, newAccount, split bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), modeTimeout)
+	defer cancel()
+
+	var (
+		user *bridgepb.User
+		err  error
+	)
+
+	if newAccount {
+		user, err = control.SetSplitMode(ctx, s.client, userID, split, modeInterval)
+	} else {
+		user, err = s.client.GetUser(ctx, wrapperspb.String(userID))
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	status := Status{State: StateSucceeded, Username: s.username, ModeKept: !newAccount}
+
+	switch {
+	case err != nil:
+		status.Message = fmt.Sprintf("the account is signed in, but its mode could not be confirmed: %v. Check it with proton-mode", err)
+		s.log("WARNING: %s is signed in, but its mode could not be confirmed: %v", s.username, err)
+
+	case newAccount:
+		mode := user.GetSplitMode()
+		status.SplitMode = &mode
+		s.log("%s is signed in, in %s, read back from the bridge.", user.GetUsername(), control.ModeName(mode))
+
+	default:
+		mode := user.GetSplitMode()
+		status.SplitMode = &mode
+		s.log("%s was signed in here before and keeps %s.", user.GetUsername(), control.ModeName(mode))
+	}
+
+	// Somebody may have started over while this ran. Their attempt is the one
+	// the page shows now, and this result is only for the log above.
+	if s.status.State == StateSettingMode {
+		s.status = status
 	}
 }
 

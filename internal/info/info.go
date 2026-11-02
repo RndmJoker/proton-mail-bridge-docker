@@ -22,8 +22,9 @@ type Account struct {
 	Password  string
 
 	// SplitMode is the bridge's per-account setting for whether each address is
-	// its own login. False is combined mode, which is Proton's default and the
-	// source of the surprise this report now names.
+	// a mailbox of its own. False is combined mode, which is Proton's default
+	// and the source of the surprise this report now names. Either way there is
+	// one bridge password per account.
 	SplitMode bool
 }
 
@@ -104,9 +105,17 @@ func modeName(splitMode bool) string {
 // belief that it opens one address opens all of them. Found on 2026-07-31 by
 // signing in with a single address and receiving the entire mailbox, which is
 // correct behaviour and the last thing anyone expects.
+//
+// Split mode does not change that, and this said otherwise until 2026-11-02:
+// "its own login, with its own password". The bridge keeps one password per
+// account and accepts it for every address (CheckAuth in the upstream
+// internal/services/useridentity/state.go). Split mode changes what a client
+// sees, not what the password opens.
 func modeExplanation(account Account) string {
 	if account.SplitMode {
-		return fmt.Sprintf("    Each of these %d addresses is its own login, with its own password.\n",
+		return fmt.Sprintf("    Each of these %d addresses is a mailbox of its own, with the address as\n"+
+			"    the username. They share the password below, and it opens every one\n"+
+			"    of them, whichever address a client was set up with.\n",
 			len(account.Addresses))
 	}
 

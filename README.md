@@ -182,7 +182,7 @@ Then sign in:
 docker exec -it proton-bridge proton-login
 ```
 
-It asks for your Proton username and password, then for whatever Proton asks for next: a two-factor code, a separate mailbox password, or a link to open for human verification. Nothing you type is echoed, logged or stored.
+It first asks whether the addresses of the account share one mailbox or get one each, see [One mailbox or one per address](#one-mailbox-or-one-per-address). Then it asks for your Proton username and password, and for whatever Proton asks for next: a two-factor code, a separate mailbox password, or a link to open for human verification. Nothing you type is echoed, logged or stored.
 
 Afterwards, `docker exec proton-bridge proton-info` shows the bridge password your mail client needs.
 
@@ -203,7 +203,7 @@ Three things trip people up here, in order of how often:
 
 - **The certificate is self-signed**, so the client will warn once and ask you to accept it. Compare the fingerprint it shows against the one from `proton-info` before you do. That comparison is the entire security of this step.
 - **The port numbers are the container's own.** If you published them elsewhere - and you must, if Proton's desktop bridge already holds 1143 and 1025 - use the numbers you published, not the ones printed. Setting `BRIDGE_PUBLIC_IMAP_PORT` and `BRIDGE_PUBLIC_SMTP_PORT` makes `proton-info` name yours instead.
-- **In combined mode**, which is Proton's default, one password covers every address on the account. Handing it to someone for one address hands them all of them. `proton-info` says which mode you are in.
+- **One password covers every address on the account**, in either mode. Handing it to someone for one address hands them all of them. In combined mode, Proton's default, every address also shows the whole mailbox; in split mode each address shows its own, and the username decides which. `proton-info` says which mode you are in.
 
 ### Signing in through a browser instead
 
@@ -258,7 +258,34 @@ rndmjoker  (connected, combined mode)
   opens the whole account, whichever address is used as the username.
 ```
 
-Typing one address as the username and receiving the whole mailbox is correct behaviour and the last thing most people expect. **A configuration handed to a script or another person in the belief that it opens one address opens all of them.** Split mode, where each address is its own login, is set in Proton's own bridge settings and is not yet reachable from this container.
+Typing one address as the username and receiving the whole mailbox is correct behaviour and the last thing most people expect. **A configuration handed to a script or another person in the belief that it opens one address opens all of them.** Split mode does not change that last part, see below.
+
+### One mailbox or one per address
+
+The bridge has two modes per account:
+
+| | Combined mode | Split mode |
+| :--- | :--- | :--- |
+| Mailboxes | one, holding every address | one per address |
+| Username | any address of the account | the address whose mailbox you want |
+| Bridge password | one per account | **the same one, for every address** |
+
+**Split mode changes what a mail client sees, not what the password opens.** The bridge keeps one password per account and accepts it for every address of that account. A client set up for one address can be pointed at any other by changing the username. If the point is to give a script or a person access to one address only, split mode does not do that.
+
+Sending does not appear to be limited either. In both modes the bridge looks up the sender a message names among all addresses of the account, whichever address was used to log in. That is read from the bridge's source (`internal/services/smtp/smtp.go`), not yet tried against a live account.
+
+**The mode is chosen at sign-in.** Both `proton-login` and the sign-in page ask, and say what the choice means before it is made. `BRIDGE_SPLIT_ADDRESSES=true` makes split mode the suggested answer; the question is asked either way, because the mode belongs to an account and a container can hold several. The answer applies to an account signed in here for the first time. One that was signed out and signs in again keeps the mode it had.
+
+**Changing it later costs a full download.** The bridge throws away what it has for the account and fetches the whole mailbox again. For an account that is already signed in:
+
+```bash
+docker exec proton-bridge proton-mode                        # list accounts and their mode
+docker exec -it proton-bridge proton-mode split              # one mailbox per address
+docker exec -it proton-bridge proton-mode combined           # back to one mailbox
+docker exec -it proton-bridge proton-mode split a@example.com   # with several accounts, name one
+```
+
+`proton-mode` explains the switch and asks before it does anything, then waits until the bridge reports the new mode and prints what it reported. Every mail client connected to that account has to be set up again afterwards.
 
 Arguments after the image name replace `bridge-control`, after the volume and the keychain have been prepared either way:
 
@@ -329,6 +356,7 @@ Three switches the bridge has, applied at every start and read back afterwards. 
 | `BRIDGE_SMTP_SSL` | `false` | Direct TLS instead of STARTTLS for SMTP |
 | `BRIDGE_SETUP_PORT` | `8443` | Port for the sign-in page |
 | `BRIDGE_SETUP_EXPOSE` | `false` | Make the sign-in page reachable from outside the container, with an access token |
+| `BRIDGE_SPLIT_ADDRESSES` | `false` | Suggest split mode when the sign-in asks, see [One mailbox or one per address](#one-mailbox-or-one-per-address) |
 | `BRIDGE_START_TIMEOUT` | `120` | Seconds to wait for the bridge's gRPC service before giving up |
 | `BRIDGE_FORWARD_TIMEOUT` | `60` | Seconds to wait for a mail port before giving up on forwarding it |
 

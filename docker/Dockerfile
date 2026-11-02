@@ -116,6 +116,7 @@ RUN bash scripts/generate-proto.sh
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/bridge-control ./cmd/bridge-control \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/proton-info ./cmd/proton-info \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/proton-login ./cmd/proton-login \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/proton-mode ./cmd/proton-mode \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/proton-repair ./cmd/proton-repair \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/proton-reset ./cmd/proton-reset
 
@@ -171,6 +172,7 @@ COPY --from=build /src/bridge /usr/local/bin/bridge
 COPY --from=control /out/bridge-control /usr/local/bin/bridge-control
 COPY --from=control /out/proton-info /usr/local/bin/proton-info
 COPY --from=control /out/proton-login /usr/local/bin/proton-login
+COPY --from=control /out/proton-mode /usr/local/bin/proton-mode
 COPY --from=control /out/proton-repair /usr/local/bin/proton-repair
 COPY --from=control /out/proton-reset /usr/local/bin/proton-reset
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -180,6 +182,7 @@ RUN chmod 0755 \
         /usr/local/bin/bridge-control \
         /usr/local/bin/proton-info \
         /usr/local/bin/proton-login \
+        /usr/local/bin/proton-mode \
         /usr/local/bin/proton-repair \
         /usr/local/bin/proton-reset \
         /usr/local/bin/entrypoint.sh \

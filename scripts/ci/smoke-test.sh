@@ -243,7 +243,7 @@ fi
 
 log "Refusing a configuration it cannot honour"
 
-for invalid in "BRIDGE_IMAP_PORT=143" "BRIDGE_SMTP_PORT=not-a-number" "BRIDGE_LOG_LEVEL=verbose"; do
+for invalid in "BRIDGE_IMAP_PORT=143" "BRIDGE_SMTP_PORT=not-a-number" "BRIDGE_LOG_LEVEL=verbose" "BRIDGE_SPLIT_ADDRESSES=maybe"; do
     if output="$("$ENGINE" run --rm -e "$invalid" "$IMAGE" 2>&1)"; then
         fail "$invalid was accepted, the container started anyway"
         continue
@@ -447,6 +447,35 @@ if printf '%s' "$info_output" | grep -qE 'Certificate \(SHA-256\)  [0-9A-F]{2}(:
     ok "shows a certificate fingerprint from the live mail port"
 else
     fail "no usable certificate fingerprint"
+fi
+
+# --------------------------------------------------------------------------
+# proton-mode answers
+# --------------------------------------------------------------------------
+
+# Without an account there is nothing to switch, and that is the only state CI
+# can reach: no test here signs in. What can be shown is that the command is in
+# the image, talks to the bridge, and says so instead of failing somewhere
+# deeper. The switch itself is covered by the Go tests against a stub.
+
+log "proton-mode"
+
+if mode_output="$("$ENGINE" exec "$CONTAINER" proton-mode 2>&1)" \
+    && printf '%s' "$mode_output" | grep -q 'No account is signed in'; then
+    ok "lists the accounts, and says there are none"
+else
+    fail "proton-mode did not answer: $mode_output"
+fi
+
+# Refused before anything is asked or switched, and the reason is the empty
+# vault rather than a missing terminal, which would send people looking in the
+# wrong place.
+if mode_output="$("$ENGINE" exec "$CONTAINER" proton-mode split 2>&1)"; then
+    fail "proton-mode split succeeded without an account"
+elif printf '%s' "$mode_output" | grep -q 'no account is signed in'; then
+    ok "proton-mode split refuses without an account and says why"
+else
+    fail "proton-mode split failed without explaining why: $mode_output"
 fi
 
 # --------------------------------------------------------------------------
@@ -949,6 +978,7 @@ readonly EXPOSED_CONTAINER="$CONTAINER-exposed"
     --name "$EXPOSED_CONTAINER" \
     -v "$update_volume_dir:/data:Z" \
     -e "BRIDGE_SETUP_EXPOSE=true" \
+    -e "BRIDGE_SPLIT_ADDRESSES=true" \
     -p "127.0.0.1::8443" \
     "$IMAGE" >/dev/null
 
@@ -1007,6 +1037,15 @@ else
         ok "the page answers when exposed"
     else
         fail "the exposed page did not answer"
+    fi
+
+    # Started with BRIDGE_SPLIT_ADDRESSES=true, so the question starts as yes.
+    # The unit tests cover both ways round; this shows the variable gets from
+    # the container's environment to the page.
+    if printf '%s' "$page" | grep -q 'id="split" type="checkbox" checked'; then
+        ok "the page asks about split mode, starting as BRIDGE_SPLIT_ADDRESSES says"
+    else
+        fail "the page does not suggest split mode although BRIDGE_SPLIT_ADDRESSES=true"
     fi
 
     # The fingerprint a person compares has to be the one on the page, or

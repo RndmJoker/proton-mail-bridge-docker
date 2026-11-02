@@ -21,7 +21,7 @@ func TestUnreachableIsMarkedAsSuch(t *testing.T) {
 	certDir := filepath.Join(t.TempDir(), "setup-tls")
 
 	// NewServer is what writes the certificate the client then pins.
-	if _, err := NewServer(login.New(&stubBridge{}), Options{
+	if _, err := NewServer(login.New(&stubBridge{}, nil), Options{
 		BindAddress: "127.0.0.1",
 		Port:        8443,
 		Token:       "a-token",
