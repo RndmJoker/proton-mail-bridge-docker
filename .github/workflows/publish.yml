@@ -117,11 +117,27 @@ jobs:
       # Why it matters: a run started on a tag would read this file from that
       # tag, which is exactly the situation #40 was about. What to build is an
       # input; where the workflow comes from is not negotiable.
+      #
+      # The default branch is asked from the API, not read from the event. A
+      # scheduled run carries no repository in its payload (GitHub lists it as
+      # "not applicable" for `schedule`), so the old
+      # `github.event.repository.default_branch` was empty there and every
+      # nightly run would have stopped right here, comparing against
+      # `refs/heads/`. Nobody saw it while the workflow was switched off. #58.
       - name: This has to run on the default branch
         env:
           STARTED_ON: ${{ github.ref }}
-          DEFAULT_BRANCH: refs/heads/${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          default_branch="$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)"
+
+          if [ -z "$default_branch" ]; then
+            echo "::error::GitHub did not name a default branch for $GITHUB_REPOSITORY, so where this runs cannot be checked."
+            exit 1
+          fi
+
+          DEFAULT_BRANCH="refs/heads/$default_branch"
+
           if [ "$STARTED_ON" != "$DEFAULT_BRANCH" ]; then
             echo "::error::Started on $STARTED_ON, which is not $DEFAULT_BRANCH."
             echo "::error::The workflow file must come from the default branch, or a guard added there does not apply."
