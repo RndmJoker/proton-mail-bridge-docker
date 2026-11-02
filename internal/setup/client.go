@@ -82,11 +82,13 @@ func (c *Client) Status() (login.Status, error) {
 	return c.call(http.MethodGet, "/api/status", nil)
 }
 
-// Login starts a sign-in.
-func (c *Client) Login(username string, password []byte) (login.Status, error) {
+// Login starts a sign-in. splitAddresses is the answer to whether the
+// account's addresses get a mailbox each.
+func (c *Client) Login(username string, password []byte, splitAddresses bool) (login.Status, error) {
 	return c.call(http.MethodPost, "/api/login", &credentials{
-		Username: username,
-		Secret:   string(password),
+		Username:       username,
+		Secret:         string(password),
+		SplitAddresses: &splitAddresses,
 	})
 }
 

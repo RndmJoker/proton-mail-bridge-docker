@@ -26,6 +26,8 @@ var pageTemplate = template.Must(template.New("setup").Parse(`<!doctype html>
   h1 { font-size: 1.3rem; }
   label { display: block; margin-top: 1rem; font-weight: 600; }
   input { width: 100%; padding: .5rem; margin-top: .25rem; font-size: 1rem; box-sizing: border-box; }
+  input[type=checkbox] { width: auto; margin: 0 .5rem 0 0; }
+  label.check { display: flex; align-items: center; }
   button { margin-top: 1rem; padding: .5rem 1rem; font-size: 1rem; cursor: pointer; }
   .note { opacity: .8; font-size: .9rem; }
   .error { color: #b00020; font-weight: 600; }
@@ -62,6 +64,18 @@ var pageTemplate = template.Must(template.New("setup").Parse(`<!doctype html>
     <input id="username" type="text" autocomplete="username">
     <label for="password">Password</label>
     <input id="password" type="password" autocomplete="current-password">
+    <label class="check" for="split"><input id="split" type="checkbox"{{ if .SplitAddresses }} checked{{ end }}>Give each address its own mailbox (split mode)</label>
+    <p class="note">
+      Off, all addresses of the account share one mailbox, and any of them
+      works as the username. This is Proton's default. On, each address is a
+      mailbox of its own, with the address as the username. Either way the
+      account has one bridge password, and it opens every address.
+    </p>
+    <p class="note">
+      Decided now because changing it later downloads the whole mailbox again.
+      It applies to an account signed in here for the first time; one that was
+      signed in before keeps the mode it had.
+    </p>
     <button id="credentials-submit">Sign in</button>
   </fieldset>
 
@@ -86,9 +100,15 @@ var pageTemplate = template.Must(template.New("setup").Parse(`<!doctype html>
     <p><a id="hv-link" href="#" rel="noreferrer noopener" target="_blank">Open the challenge</a></p>
   </fieldset>
 
+  <fieldset id="mode-step" class="hidden">
+    <legend>Signed in</legend>
+    <p>The account is signed in. Setting its mode and waiting for the bridge to confirm it...</p>
+  </fieldset>
+
   <fieldset id="done-step" class="hidden">
     <legend>Signed in</legend>
     <p>The account is signed in. This page is shutting down; you can close it.</p>
+    <p id="done-mode"></p>
   </fieldset>
 
   <p id="message" class="error"></p>
@@ -112,13 +132,22 @@ var pageTemplate = template.Must(template.New("setup").Parse(`<!doctype html>
   }
 
   function show(id) {
-    ["credentials-step", "totp-step", "mailbox-step", "hv-step", "done-step"].forEach(function (step) {
+    ["credentials-step", "totp-step", "mailbox-step", "hv-step", "mode-step", "done-step"].forEach(function (step) {
       document.getElementById(step).classList.toggle("hidden", step !== id);
     });
   }
 
   function say(text) {
     document.getElementById("message").textContent = text || "";
+  }
+
+  // What the bridge reported, not what was ticked above.
+  function modeText(status) {
+    if (status.splitMode === undefined) { return ""; }
+    var mode = status.splitMode ? "split mode" : "combined mode";
+    return status.modeKept
+      ? "It was signed in here before and keeps " + mode + "."
+      : "It is in " + mode + ", as reported by the bridge.";
   }
 
   function render(status) {
@@ -136,7 +165,11 @@ var pageTemplate = template.Must(template.New("setup").Parse(`<!doctype html>
         link.textContent = status.humanVerificationUrl || "";
         show("hv-step");
         break;
-      case "succeeded": show("done-step"); break;
+      case "setting_mode": show("mode-step"); break;
+      case "succeeded":
+        document.getElementById("done-mode").textContent = modeText(status);
+        show("done-step");
+        break;
       default: show("credentials-step");
     }
   }
@@ -186,7 +219,8 @@ var pageTemplate = template.Must(template.New("setup").Parse(`<!doctype html>
     var password = document.getElementById("password");
     post("/api/login", {
       username: document.getElementById("username").value,
-      secret: password.value
+      secret: password.value,
+      splitAddresses: document.getElementById("split").checked
     });
     password.value = "";
   });
@@ -209,12 +243,13 @@ var pageTemplate = template.Must(template.New("setup").Parse(`<!doctype html>
 `))
 
 type pageData struct {
-	Fingerprint   string
-	TokenRequired bool
-	Nonce         string
-	CSRFCookie    string
-	CSRFHeader    string
-	TokenHeader   string
+	Fingerprint    string
+	TokenRequired  bool
+	SplitAddresses bool
+	Nonce          string
+	CSRFCookie     string
+	CSRFHeader     string
+	TokenHeader    string
 }
 
 func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
@@ -241,12 +276,13 @@ func (s *Server) handlePage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	data := pageData{
-		Fingerprint:   s.fingerprint,
-		TokenRequired: s.token != "",
-		Nonce:         nonce,
-		CSRFCookie:    csrfCookieName,
-		CSRFHeader:    csrfHeaderName,
-		TokenHeader:   TokenHeaderName,
+		Fingerprint:    s.fingerprint,
+		TokenRequired:  s.token != "",
+		SplitAddresses: s.splitAddresses,
+		Nonce:          nonce,
+		CSRFCookie:     csrfCookieName,
+		CSRFHeader:     csrfHeaderName,
+		TokenHeader:    TokenHeaderName,
 	}
 
 	if err := pageTemplate.Execute(w, data); err != nil {

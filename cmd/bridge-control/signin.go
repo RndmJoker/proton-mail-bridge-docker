@@ -70,7 +70,7 @@ const accountsSettledTimeout = 15 * time.Second
 // offline or after a failed sync. A page that only appeared during
 // installation would leave a container nobody can get back into.
 func runSignIn(ctx context.Context, cfg config.Config, client *bridgeclient.Client, vaultExists bool) {
-	session := login.New(client)
+	session := login.New(client, logf)
 
 	// Buffered by one: a burst of events only needs to result in one look at
 	// the account list, and the sender must never block on this.
@@ -149,9 +149,10 @@ func serveSetup(ctx context.Context, cfg config.Config, client *bridgeclient.Cli
 	certDir := filepath.Join(settings, setup.CertDirName)
 
 	options := setup.Options{
-		Port:    cfg.SetupPort,
-		CertDir: certDir,
-		Log:     logf,
+		Port:           cfg.SetupPort,
+		CertDir:        certDir,
+		Log:            logf,
+		SplitAddresses: cfg.SplitAddresses,
 	}
 
 	if cfg.SetupExpose {
@@ -274,11 +275,27 @@ func forgetToken(certDir string) {
 // watchForAccount ends the page once an account is connected.
 func watchForAccount(ctx context.Context, client *bridgeclient.Client, session *login.Session, server *setup.Server, changed <-chan struct{}) {
 	for {
-		if session.Status().State == login.StateSucceeded {
+		state := session.Status().State
+
+		if state == login.StateSucceeded {
 			server.MarkSignedIn()
 			session.Reset()
 
 			return
+		}
+
+		// The account is connected by now, so the check below would end the
+		// page while the sign-in is still saying which mode it ended up in.
+		// The session moves on by itself, bounded by its own timeout.
+		//
+		// This only holds once the session knows. The bridge reports the
+		// account as connected a moment before it reports the sign-in
+		// finished, and if the check below runs in between, the page ends
+		// first. The mode is still set, by the session, and logged there; only
+		// whoever is watching the page does not see it.
+		if state == login.StateSettingMode {
+			waitFor(ctx, changed, time.Second)
+			continue
 		}
 
 		needed, _, err := control.AccountsNeedSignIn(ctx, client)

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/login"
@@ -83,4 +84,68 @@ func TestResolveUnreachable(t *testing.T) {
 			t.Fatalf("got %v, want it to also carry why the bridge could not answer", err)
 		}
 	})
+}
+
+// Enter takes what BRIDGE_SPLIT_ADDRESSES suggests, and anything unclear is
+// refused rather than read as yes or no: either reading would start the first
+// sync in a mode nobody chose.
+func TestParseSplitAnswer(t *testing.T) {
+	for _, test := range []struct {
+		answer    string
+		suggested bool
+		want      bool
+	}{
+		{"", false, false},
+		{"", true, true},
+		{"y", false, true},
+		{"YES", false, true},
+		{"n", true, false},
+		{" no ", true, false},
+	} {
+		got, err := parseSplitAnswer(test.answer, test.suggested)
+		if err != nil {
+			t.Errorf("%q, suggested %v: %v", test.answer, test.suggested, err)
+			continue
+		}
+
+		if got != test.want {
+			t.Errorf("%q, suggested %v: got %v, want %v", test.answer, test.suggested, got, test.want)
+		}
+	}
+
+	for _, unclear := range []string{"split", "ja", "1"} {
+		if _, err := parseSplitAnswer(unclear, true); err == nil {
+			t.Errorf("%q was taken as an answer", unclear)
+		}
+	}
+}
+
+// The question says what it means before it is answered. The shared password
+// is the part that is easy to get wrong.
+func TestSplitQuestionSaysThePasswordIsShared(t *testing.T) {
+	if !strings.Contains(splitQuestion, "one bridge password, and it opens every address") {
+		t.Errorf("the question does not say the password is shared:\n%s", splitQuestion)
+	}
+}
+
+func TestDescribeModeReportsWhatTheBridgeSaid(t *testing.T) {
+	split := true
+
+	if got := describeMode(login.Status{SplitMode: &split}); !strings.Contains(got, "split mode, as reported by the bridge") {
+		t.Errorf("a new account in split mode: %q", got)
+	}
+
+	if got := describeMode(login.Status{SplitMode: &split, ModeKept: true}); !strings.Contains(got, "keeps split mode") {
+		t.Errorf("a returning account: %q", got)
+	}
+
+	// After resolveUnreachable there is no report, and claiming one would be
+	// worse than pointing to where it is.
+	if got := describeMode(login.Status{}); !strings.Contains(got, "container log") {
+		t.Errorf("no report: %q", got)
+	}
+
+	if got := describeMode(login.Status{Message: "its mode could not be confirmed"}); !strings.HasPrefix(got, "Its mode could not be confirmed") {
+		t.Errorf("a warning: %q", got)
+	}
 }

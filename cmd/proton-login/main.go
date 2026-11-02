@@ -85,14 +85,78 @@ func run() error {
 	fmt.Println("Signing in to Proton. Nothing you type here is echoed or logged.")
 	fmt.Println()
 
-	return drive(client, status)
+	reader := bufio.NewReader(os.Stdin)
+
+	// Asked once, before the username, so that the password is not held while
+	// somebody reads the explanation. A sign-in that has to start over after a
+	// human verification keeps the answer.
+	split, err := askSplit(reader, cfg.SplitAddresses)
+	if err != nil {
+		return err
+	}
+
+	return drive(client, reader, status, split)
+}
+
+// askSplit asks whether the account's addresses get a mailbox each, and says
+// what that means before the answer is given.
+//
+// suggested is BRIDGE_SPLIT_ADDRESSES. It decides what Enter means, not
+// whether the question is asked: split mode is per account, and a container
+// can hold several.
+func askSplit(reader *bufio.Reader, suggested bool) (bool, error) {
+	fmt.Print(splitQuestion)
+
+	choices := "[y/N]"
+	if suggested {
+		choices = "[Y/n]"
+	}
+
+	answer, err := prompt(reader, fmt.Sprintf("Give each address its own mailbox? %s ", choices))
+	if err != nil {
+		return false, err
+	}
+
+	fmt.Println()
+
+	return parseSplitAnswer(string(answer), suggested)
+}
+
+// splitQuestion is what is said before asking. The sentence about the password
+// is the one people need: "each address is its own login" reads as "each
+// address has its own password", and it does not.
+const splitQuestion = `Address mode
+  Combined: all addresses of the account share one mailbox, and any of them
+  works as the username. This is Proton's default.
+  Split: each address is a mailbox of its own, with the address as the
+  username.
+  Either way the account has one bridge password, and it opens every address.
+
+  Decided now because changing it later downloads the whole mailbox again.
+  It applies to an account signed in here for the first time; one that was
+  signed in before keeps the mode it had.
+
+`
+
+// parseSplitAnswer reads the answer. Empty takes the suggestion; anything that
+// is neither yes nor no is refused rather than read as one of them, because
+// either reading starts a sync in a mode somebody did not choose.
+func parseSplitAnswer(answer string, suggested bool) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "":
+		return suggested, nil
+	case "y", "yes":
+		return true, nil
+	case "n", "no":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%q is neither yes nor no; nothing was sent", answer)
+	}
 }
 
 // drive walks the sign-in until it ends, asking for whatever the bridge asks
 // for next.
-func drive(client *setup.Client, status login.Status) error {
-	reader := bufio.NewReader(os.Stdin)
-
+func drive(client *setup.Client, reader *bufio.Reader, status login.Status, split bool) error {
 	for {
 		switch status.State {
 		case login.StateIdle, login.StateFailed:
@@ -105,7 +169,7 @@ func drive(client *setup.Client, status login.Status) error {
 			}
 
 			var err error
-			if status, err = askCredentials(client, reader); err != nil {
+			if status, err = askCredentials(client, reader, split); err != nil {
 				return err
 			}
 
@@ -153,11 +217,11 @@ func drive(client *setup.Client, status login.Status) error {
 			}
 
 			var err error
-			if status, err = askCredentials(client, reader); err != nil {
+			if status, err = askCredentials(client, reader, split); err != nil {
 				return err
 			}
 
-		case login.StateAwaitingCredentials:
+		case login.StateAwaitingCredentials, login.StateSettingMode:
 			var err error
 			if status, err = waitForChange(client, status); err != nil {
 				return err
@@ -166,6 +230,7 @@ func drive(client *setup.Client, status login.Status) error {
 		case login.StateSucceeded:
 			fmt.Println()
 			fmt.Println("Signed in. The sign-in page is shutting down.")
+			fmt.Print(describeMode(status))
 			fmt.Println("Run proton-info to see the bridge password for your mail client.")
 
 			return nil
@@ -176,7 +241,23 @@ func drive(client *setup.Client, status login.Status) error {
 	}
 }
 
-func askCredentials(client *setup.Client, reader *bufio.Reader) (login.Status, error) {
+// describeMode says which mode the account ended up in, as the bridge reported
+// it. Empty when the page went away before it could say, which is what
+// resolveUnreachable leaves behind; the container log has it then.
+func describeMode(status login.Status) string {
+	switch {
+	case status.Message != "":
+		return capitalise(status.Message) + "\n"
+	case status.SplitMode == nil:
+		return "The container log says which mode the account is in, and proton-mode shows it.\n"
+	case status.ModeKept:
+		return fmt.Sprintf("It was signed in here before and keeps %s.\n", control.ModeName(*status.SplitMode))
+	default:
+		return fmt.Sprintf("It is in %s, as reported by the bridge.\n", control.ModeName(*status.SplitMode))
+	}
+}
+
+func askCredentials(client *setup.Client, reader *bufio.Reader, split bool) (login.Status, error) {
 	username, err := prompt(reader, "Proton username or address: ")
 	if err != nil {
 		return login.Status{}, err
@@ -191,7 +272,7 @@ func askCredentials(client *setup.Client, reader *bufio.Reader) (login.Status, e
 		return login.Status{}, err
 	}
 
-	status, err := client.Login(string(username), password)
+	status, err := client.Login(string(username), password, split)
 
 	clear(password)
 
@@ -215,7 +296,7 @@ func waitForChange(client *setup.Client, current login.Status) (login.Status, er
 	deadline := time.Now().Add(stepTimeout)
 
 	for {
-		if current.State != login.StateAwaitingCredentials {
+		if current.State != login.StateAwaitingCredentials && current.State != login.StateSettingMode {
 			return current, nil
 		}
 

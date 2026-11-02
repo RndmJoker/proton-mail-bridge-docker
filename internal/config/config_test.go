@@ -20,6 +20,7 @@ func clearEnv(t *testing.T) {
 		"BRIDGE_START_TIMEOUT",
 		"BRIDGE_SETUP_PORT",
 		"BRIDGE_SETUP_EXPOSE",
+		"BRIDGE_SPLIT_ADDRESSES",
 	} {
 		t.Setenv(name, "")
 	}
@@ -151,6 +152,12 @@ func TestFromEnvRejects(t *testing.T) {
 			env:  map[string]string{"BRIDGE_SETUP_EXPOSE": "sure"},
 		},
 		{
+			// Read as "no" this would quietly suggest combined mode to someone
+			// who asked for the opposite, and the first sync would run in it.
+			name: "a split flag that is not a truth value",
+			env:  map[string]string{"BRIDGE_SPLIT_ADDRESSES": "per address"},
+		},
+		{
 			name: "a log level the bridge does not know",
 			env:  map[string]string{"BRIDGE_LOG_LEVEL": "verbose"},
 		},
@@ -273,5 +280,32 @@ func TestTelemetryDefaultsOff(t *testing.T) {
 
 	if !cfg.Telemetry {
 		t.Error("BRIDGE_TELEMETRY=true was not read, so the default above proves nothing")
+	}
+}
+
+// Split mode is suggested only when asked for. Proton's default is combined,
+// and a container that suggested otherwise unasked would change how every mail
+// client sees the account the first time somebody pressed Enter.
+func TestSplitAddressesDefaultsOff(t *testing.T) {
+	clearEnv(t)
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+
+	if cfg.SplitAddresses {
+		t.Error("split mode is suggested although nobody asked for it")
+	}
+
+	t.Setenv("BRIDGE_SPLIT_ADDRESSES", "true")
+
+	cfg, err = FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+
+	if !cfg.SplitAddresses {
+		t.Error("BRIDGE_SPLIT_ADDRESSES=true was not read, so the default above proves nothing")
 	}
 }

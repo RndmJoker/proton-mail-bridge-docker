@@ -8,12 +8,15 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/bridgepb"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/login"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 // stubBridge accepts every login call and records nothing. What is under test
@@ -42,7 +45,7 @@ func newTestServer(t *testing.T, token string, bind string) (*Server, *stubBridg
 
 	bridge := &stubBridge{}
 
-	server, err := NewServer(login.New(bridge), Options{
+	server, err := NewServer(login.New(bridge, nil), Options{
 		BindAddress: bind,
 		Port:        8443,
 		Token:       token,
@@ -80,7 +83,7 @@ func (s *Server) testRequest(method, path string, body any) *http.Request {
 // The rule the whole exposure story rests on. Without it, anyone who can route
 // to the container reaches a page that takes Proton credentials.
 func TestExposedWithoutATokenIsRefused(t *testing.T) {
-	_, err := NewServer(login.New(&stubBridge{}), Options{
+	_, err := NewServer(login.New(&stubBridge{}, nil), Options{
 		BindAddress: "0.0.0.0",
 		Port:        8443,
 		CertDir:     filepath.Join(t.TempDir(), "setup-tls"),
@@ -93,7 +96,7 @@ func TestExposedWithoutATokenIsRefused(t *testing.T) {
 
 func TestLoopbackWithoutATokenIsFine(t *testing.T) {
 	for _, bind := range []string{"", "127.0.0.1", "localhost"} {
-		if _, err := NewServer(login.New(&stubBridge{}), Options{
+		if _, err := NewServer(login.New(&stubBridge{}, nil), Options{
 			BindAddress: bind,
 			Port:        8443,
 			CertDir:     filepath.Join(t.TempDir(), "setup-tls"),
@@ -417,5 +420,137 @@ func TestServeStopsWhenSignedIn(t *testing.T) {
 
 	if err := <-done; err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// modeBridge is stubBridge with an account behind it, so that a sign-in can
+// finish and the answer about split mode can be seen arriving.
+type modeBridge struct {
+	stubBridge
+
+	mu        sync.Mutex
+	splitMode bool
+	setCalls  int
+}
+
+func (s *modeBridge) GetUser(_ context.Context, in *wrapperspb.StringValue, _ ...grpc.CallOption) (*bridgepb.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return &bridgepb.User{Id: in.GetValue(), Username: "someone", State: bridgepb.UserState_CONNECTED, SplitMode: s.splitMode}, nil
+}
+
+func (s *modeBridge) SetUserSplitMode(_ context.Context, in *bridgepb.UserSplitModeRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.setCalls++
+	s.splitMode = in.GetActive()
+
+	return &emptypb.Empty{}, nil
+}
+
+func newModeServer(t *testing.T, splitAddresses bool) (*Server, *modeBridge) {
+	t.Helper()
+
+	bridge := &modeBridge{}
+
+	server, err := NewServer(login.New(bridge, nil), Options{
+		Port:           8443,
+		CertDir:        filepath.Join(t.TempDir(), "setup-tls"),
+		SplitAddresses: splitAddresses,
+	})
+	if err != nil {
+		t.Fatalf("could not build the server: %v", err)
+	}
+
+	return server, bridge
+}
+
+// signInWith posts a sign-in, lets the bridge report it finished for a new
+// account, and returns the mode the account ended up in.
+func signInWith(t *testing.T, server *Server, bridge *modeBridge, body map[string]any) bool {
+	t.Helper()
+
+	w := httptest.NewRecorder()
+	server.routes().ServeHTTP(w, server.testRequest(http.MethodPost, "/api/login", body))
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("the sign-in was not accepted: %d %s", w.Code, w.Body.String())
+	}
+
+	server.session.Handle(&bridgepb.StreamEvent{Event: &bridgepb.StreamEvent_Login{Login: &bridgepb.LoginEvent{
+		Event: &bridgepb.LoginEvent_Finished{Finished: &bridgepb.LoginFinishedEvent{UserID: "u"}},
+	}}})
+
+	deadline := time.Now().Add(5 * time.Second)
+
+	for server.session.Status().State == login.StateSettingMode {
+		if time.Now().After(deadline) {
+			t.Fatal("the mode was never settled")
+		}
+
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	bridge.mu.Lock()
+	defer bridge.mu.Unlock()
+
+	return bridge.splitMode
+}
+
+// The answer travels with the sign-in, and an explicit no beats a default of
+// yes. Otherwise unticking the box would do nothing on a container started
+// with BRIDGE_SPLIT_ADDRESSES=true.
+func TestLoginCarriesTheAnswerAboutSplitMode(t *testing.T) {
+	server, bridge := newModeServer(t, true)
+
+	if signInWith(t, server, bridge, map[string]any{"username": "someone@example.invalid", "secret": "pw", "splitAddresses": false}) {
+		t.Error("split mode was set although the answer was no")
+	}
+
+	server, bridge = newModeServer(t, false)
+
+	if !signInWith(t, server, bridge, map[string]any{"username": "someone@example.invalid", "secret": "pw", "splitAddresses": true}) {
+		t.Error("split mode was asked for and not set")
+	}
+}
+
+// A request that does not answer, from a client older than the question, gets
+// what the container suggests rather than a silent no.
+func TestLoginWithoutAnAnswerTakesTheDefault(t *testing.T) {
+	server, bridge := newModeServer(t, true)
+
+	if !signInWith(t, server, bridge, map[string]any{"username": "someone@example.invalid", "secret": "pw"}) {
+		t.Error("BRIDGE_SPLIT_ADDRESSES=true did not reach a sign-in that gave no answer")
+	}
+}
+
+// The question is on the page, it starts as the variable says, and it says
+// what it means before anyone answers. The shared password is the part people
+// get wrong.
+func TestPageAsksAboutSplitMode(t *testing.T) {
+	for _, suggested := range []bool{false, true} {
+		server, _ := newModeServer(t, suggested)
+
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.Host = "127.0.0.1:8443"
+
+		w := httptest.NewRecorder()
+		server.routes().ServeHTTP(w, r)
+
+		body := w.Body.String()
+
+		if !strings.Contains(body, `id="split" type="checkbox"`) {
+			t.Fatal("the page does not ask about split mode")
+		}
+
+		if got := strings.Contains(body, `id="split" type="checkbox" checked`); got != suggested {
+			t.Errorf("BRIDGE_SPLIT_ADDRESSES=%v, but the box is ticked: %v", suggested, got)
+		}
+
+		if !strings.Contains(body, "one bridge password") {
+			t.Error("the page asks without saying that the password is shared")
+		}
 	}
 }

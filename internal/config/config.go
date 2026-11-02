@@ -93,6 +93,17 @@ type Config struct {
 	// `SetIsTelemetryDisabled`, so this value is negated before it is sent.
 	Telemetry bool
 
+	// SplitAddresses is what the sign-in suggests when it asks whether an
+	// account's addresses get a mailbox each. Off by default, which is Proton's
+	// own default.
+	//
+	// A suggestion and not the answer. Split mode is a setting per account, a
+	// container can hold several, and switching an account later downloads its
+	// whole mailbox again. So the sign-in still asks, every time, and this only
+	// decides what the question starts as. Nothing here ever touches an account
+	// that is already signed in.
+	SplitAddresses bool
+
 	// PublicIMAPPort and PublicSMTPPort are what the operator published the
 	// mail ports as on the host. Zero when nobody said.
 	//
@@ -180,6 +191,10 @@ func FromEnv() (Config, error) {
 	// Defaults to off. See the field comment: this is a decision, not the
 	// bridge's default carried over.
 	if config.Telemetry, err = boolean("BRIDGE_TELEMETRY", false); err != nil {
+		return Config{}, err
+	}
+
+	if config.SplitAddresses, err = boolean("BRIDGE_SPLIT_ADDRESSES", false); err != nil {
 		return Config{}, err
 	}
 
