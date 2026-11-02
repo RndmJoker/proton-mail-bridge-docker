@@ -23,6 +23,7 @@ import (
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/config"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/control"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/login"
+	"github.com/RndmJoker/proton-mail-bridge-docker/internal/progress"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/setup"
 	"golang.org/x/term"
 )
@@ -292,13 +293,23 @@ func askCredentials(client *setup.Client, reader *bufio.Reader, split bool) (log
 // The login call returns immediately and everything real arrives on the
 // bridge's event stream, which the server is watching. Polling the server is
 // how a terminal sees that.
+//
+// The wait shows a spinner, #73. After the two-factor code the sign-in can take
+// long enough to look stuck, and interrupting it then is the worst moment to.
 func waitForChange(client *setup.Client, current login.Status) (login.Status, error) {
+	if !waiting(current.State) {
+		return current, nil
+	}
+
+	// Stopped on every way out, which also erases its line before whatever is
+	// printed next, an error included.
+	spinner := progress.Start(waitingFor(current.State))
+	defer spinner.Stop()
+
 	deadline := time.Now().Add(stepTimeout)
 
-	for {
-		if current.State != login.StateAwaitingCredentials && current.State != login.StateSettingMode {
-			return current, nil
-		}
+	for waiting(current.State) {
+		spinner.Say(waitingFor(current.State))
 
 		if time.Now().After(deadline) {
 			return login.Status{}, fmt.Errorf("the bridge did not answer within %v", stepTimeout)
@@ -313,6 +324,22 @@ func waitForChange(client *setup.Client, current login.Status) (login.Status, er
 
 		current = next
 	}
+
+	return current, nil
+}
+
+// waiting says whether state is the bridge's turn rather than the person's.
+func waiting(state login.State) bool {
+	return state == login.StateAwaitingCredentials || state == login.StateSettingMode
+}
+
+// waitingFor is what the spinner says while the sign-in is in state.
+func waitingFor(state login.State) string {
+	if state == login.StateSettingMode {
+		return "Setting the address mode"
+	}
+
+	return "Waiting for Proton"
 }
 
 // resolveUnreachable turns a setup server that has gone away into an answer.

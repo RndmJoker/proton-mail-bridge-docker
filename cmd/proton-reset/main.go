@@ -30,6 +30,7 @@ import (
 
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/bridgeclient"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/control"
+	"github.com/RndmJoker/proton-mail-bridge-docker/internal/progress"
 	"golang.org/x/term"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -137,7 +138,12 @@ func run() error {
 	resetCtx, cancelReset := context.WithTimeout(context.Background(), callTimeout)
 	defer cancelReset()
 
-	if err := control.Reset(resetCtx, client.BridgeClient, readBackInterval); err != nil {
+	// Up to callTimeout without a word otherwise, #73.
+	spinner := progress.Start("Waiting for the bridge to empty the vault")
+	err = control.Reset(resetCtx, client.BridgeClient, readBackInterval)
+	spinner.Stop()
+
+	if err != nil {
 		return err
 	}
 
