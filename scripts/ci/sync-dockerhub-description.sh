@@ -17,8 +17,16 @@
 # before it can be described, and the first push is what creates it.
 #
 # Environment:
-#   DOCKERHUB_USER    account the token belongs to
-#   DOCKERHUB_TOKEN   access token with write permission, not the password
+#   DOCKERHUB_USER                account the token belongs to
+#   DOCKERHUB_DESCRIPTION_TOKEN   personal access token with the permission
+#                                 "Read, Write, Delete", not the password
+#
+# A token of its own, not the one the image is pushed with. Changing the
+# description needs "Read, Write, Delete"; the push token answered 403 when it
+# was tried on 2026-11-02 (#58). The push token stays the weaker one on
+# purpose: `docker login` writes it into the runner's Docker configuration,
+# where every later step can read it, the attestation action included. This
+# one only ever reaches this script.
 
 set -euo pipefail
 
@@ -30,11 +38,16 @@ readonly REPOSITORY="${DOCKERHUB_REPOSITORY:-proton-mail-bridge-docker}"
 readonly DESCRIPTION_FILE="$REPO_ROOT/docker/dockerhub-description.md"
 
 # Docker Hub caps the short description at 100 characters and silently
-# truncates beyond that, so it is kept well inside.
-readonly SHORT_DESCRIPTION="Proton Mail Bridge for servers: no GUI, env vars, one-time login. Unofficial."
+# truncates beyond that. This one is 99, so the check below is not decoration.
+readonly SHORT_DESCRIPTION="Proton Mail Bridge for servers: no GUI, env vars, one-time login. Unofficial, largely AI-generated."
 
-if [ -z "${DOCKERHUB_USER:-}" ] || [ -z "${DOCKERHUB_TOKEN:-}" ]; then
-    echo "::error::DOCKERHUB_USER and DOCKERHUB_TOKEN must both be set." >&2
+if [ "${#SHORT_DESCRIPTION}" -gt 100 ]; then
+    echo "::error::The short description is ${#SHORT_DESCRIPTION} characters long and Docker Hub keeps 100." >&2
+    exit 1
+fi
+
+if [ -z "${DOCKERHUB_USER:-}" ] || [ -z "${DOCKERHUB_DESCRIPTION_TOKEN:-}" ]; then
+    echo "::error::DOCKERHUB_USER and DOCKERHUB_DESCRIPTION_TOKEN must both be set." >&2
     exit 1
 fi
 
@@ -50,7 +63,7 @@ fi
 # Hub answers 200 with an error object, and plain jq would turn the missing
 # field into the four characters "null" and hand them on as a token.
 jwt="$(
-    jq -n --arg u "$DOCKERHUB_USER" --arg p "$DOCKERHUB_TOKEN" '{username: $u, password: $p}' \
+    jq -n --arg u "$DOCKERHUB_USER" --arg p "$DOCKERHUB_DESCRIPTION_TOKEN" '{username: $u, password: $p}' \
         | curl -sS --fail-with-body \
             -H 'Content-Type: application/json' \
             --data-binary @- \
@@ -59,7 +72,7 @@ jwt="$(
 )"
 
 if [ -z "$jwt" ]; then
-    echo "::error::Docker Hub returned no token. Check DOCKERHUB_TOKEN." >&2
+    echo "::error::Docker Hub returned no token. Check DOCKERHUB_DESCRIPTION_TOKEN." >&2
     exit 1
 fi
 
@@ -92,6 +105,10 @@ case "$status" in
         ;;
     404)
         echo "::error::docker.io/$NAMESPACE/$REPOSITORY does not exist. The push should have created it." >&2
+        exit 1
+        ;;
+    401|403)
+        echo "::error::Docker Hub answered $status when updating the description. DOCKERHUB_DESCRIPTION_TOKEN needs the permission \"Read, Write, Delete\" on Docker Hub." >&2
         exit 1
         ;;
     *)

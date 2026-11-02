@@ -271,9 +271,14 @@ jobs:
 
       # After the push, because the first push is what creates the repository
       # on Docker Hub and an empty repository cannot be described.
+      #
+      # With a token of its own. Changing the description needs more than a
+      # push does, and the stronger token is kept away from `docker login`
+      # above, whose credentials every later step can read. The reasoning is in
+      # the script.
       - name: Update the Docker Hub description
         env:
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_DESCRIPTION_TOKEN: ${{ secrets.DOCKERHUB_DESCRIPTION_TOKEN }}
         run: bash scripts/ci/sync-dockerhub-description.sh
 
       - name: What was published

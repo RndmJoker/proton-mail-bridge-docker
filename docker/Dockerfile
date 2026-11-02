@@ -251,7 +251,7 @@ RUN test -n "${IMAGE_VERSION}"  || { echo "IMAGE_VERSION is empty"  >&2; exit 1;
         > /etc/image-provenance
 
 LABEL org.opencontainers.image.title="proton-mail-bridge-docker" \
-      org.opencontainers.image.description="Proton Mail Bridge for servers: no graphical interface, configured through environment variables, one-time login. Unofficial." \
+      org.opencontainers.image.description="Proton Mail Bridge for servers: no graphical interface, configured through environment variables, one-time login. Unofficial, largely AI-generated." \
       org.opencontainers.image.source="https://github.com/RndmJoker/proton-mail-bridge-docker" \
       org.opencontainers.image.url="https://github.com/RndmJoker/proton-mail-bridge-docker" \
       org.opencontainers.image.documentation="https://github.com/RndmJoker/proton-mail-bridge-docker#readme" \
