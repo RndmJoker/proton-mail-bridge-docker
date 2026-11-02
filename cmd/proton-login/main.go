@@ -5,8 +5,10 @@
 // It is the same sign-in as the setup page, through the same server and the
 // same checks. Two ways in, one code path, so they cannot drift apart.
 //
-// Nothing typed here is echoed, logged or stored. The password goes to the
-// bridge, which sends it to Proton; this program keeps no copy.
+// The passwords stay hidden while they are typed. The username, the answer
+// about split mode and the two-factor code are shown; until 2026-11-02 this
+// said nothing was, #75. No password or code goes to a log. The password goes
+// to the bridge, which sends it to Proton; this program keeps no copy.
 package main
 
 import (
@@ -83,7 +85,8 @@ func run() error {
 		return nil
 	}
 
-	fmt.Println("Signing in to Proton. Nothing you type here is echoed or logged.")
+	fmt.Println("Signing in to Proton. Passwords stay hidden while you type them, and no")
+	fmt.Println("password or code goes to a log.")
 	fmt.Println()
 
 	reader := bufio.NewReader(os.Stdin)

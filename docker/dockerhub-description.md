@@ -32,7 +32,7 @@ docker run -d --name proton-bridge \
 docker exec -it proton-bridge proton-login
 ```
 
-`proton-login` asks whether the addresses of the account share one mailbox or get one each, then for your Proton credentials and whatever Proton asks for next. Nothing you type is echoed, logged or stored. Afterwards `docker exec proton-bridge proton-info` shows the bridge password your mail client needs. Either way there is one bridge password per account, and it opens every address.
+`proton-login` asks whether the addresses of the account share one mailbox or get one each, then for your Proton credentials and whatever Proton asks for next. Passwords stay hidden while you type them, and no password or code goes to a log. Afterwards `docker exec proton-bridge proton-info` shows the bridge password your mail client needs. Either way there is one bridge password per account, and it opens every address.
 
 ## Tags
 

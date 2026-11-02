@@ -182,7 +182,7 @@ Then sign in:
 docker exec -it proton-bridge proton-login
 ```
 
-It first asks whether the addresses of the account share one mailbox or get one each, see [One mailbox or one per address](#one-mailbox-or-one-per-address). Then it asks for your Proton username and password, and for whatever Proton asks for next: a two-factor code, a separate mailbox password, or a link to open for human verification. Nothing you type is echoed, logged or stored.
+It first asks whether the addresses of the account share one mailbox or get one each, see [One mailbox or one per address](#one-mailbox-or-one-per-address). Then it asks for your Proton username and password, and for whatever Proton asks for next: a two-factor code, a separate mailbox password, or a link to open for human verification. Passwords stay hidden while you type them; the username and the two-factor code are shown. No password or code goes to a log.
 
 Afterwards, `docker exec proton-bridge proton-info` shows the bridge password your mail client needs.
 
