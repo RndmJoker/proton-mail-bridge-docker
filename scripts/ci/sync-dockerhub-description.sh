@@ -38,8 +38,8 @@ readonly REPOSITORY="${DOCKERHUB_REPOSITORY:-proton-mail-bridge-docker}"
 readonly DESCRIPTION_FILE="$REPO_ROOT/docker/dockerhub-description.md"
 
 # Docker Hub caps the short description at 100 characters and silently
-# truncates beyond that, so it is kept well inside.
-readonly SHORT_DESCRIPTION="Proton Mail Bridge for servers: no GUI, env vars, one-time login. Unofficial."
+# truncates beyond that. This one is 99, so the check below is not decoration.
+readonly SHORT_DESCRIPTION="Proton Mail Bridge for servers: no GUI, env vars, one-time login. Unofficial, largely AI-generated."
 
 if [ "${#SHORT_DESCRIPTION}" -gt 100 ]; then
     echo "::error::The short description is ${#SHORT_DESCRIPTION} characters long and Docker Hub keeps 100." >&2
