@@ -109,6 +109,17 @@ func TestFormatNamesTheAccountMode(t *testing.T) {
 	if strings.Contains(out, "opens the whole account") {
 		t.Errorf("split mode is described as combined:\n%s", out)
 	}
+
+	// Until 2026-11-02 this said each address had its own password. The bridge
+	// keeps one per account, so a client set up for one address can be pointed
+	// at any other with the same password.
+	if strings.Contains(out, "its own password") {
+		t.Errorf("split mode is described as one password per address:\n%s", out)
+	}
+
+	if !strings.Contains(out, "opens every one") {
+		t.Errorf("split mode is described without the shared password:\n%s", out)
+	}
 }
 
 // TestFormatSaysWhichSideThePortsAreOn is #29.
