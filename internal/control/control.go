@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/bridgepb"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/config"
@@ -274,19 +275,48 @@ func Repair(ctx context.Context, client bridgepb.BridgeClient) ([]*bridgepb.User
 // reported success and left an account behind would be the worst possible
 // outcome for this particular command: somebody runs it precisely because they
 // want the container to have forgotten, and would have no reason to check.
-func Reset(ctx context.Context, client bridgepb.BridgeClient) error {
+//
+// Waits for the list to empty rather than reading it once, every interval
+// until ctx is done. The bridge answers TriggerReset before it does anything
+// and resets in the background (upstream
+// internal/frontend/grpc/service_methods.go). Its account list is built in two
+// steps, the IDs from the vault and then a lookup per ID, so a list read during
+// the reset either still holds the account being removed or fails with "no such
+// user" because it vanished between the two steps. Until 2026-11-02 the single
+// read caught exactly that and reported a reset that had worked as unknown,
+// #74. A failed read now means "not yet", and only the deadline turns it into
+// an answer.
+func Reset(ctx context.Context, client bridgepb.BridgeClient, interval time.Duration) error {
 	if _, err := client.TriggerReset(ctx, &emptypb.Empty{}); err != nil {
 		return fmt.Errorf("the bridge refused to reset: %w", err)
 	}
 
-	users, err := client.GetUserList(ctx, &emptypb.Empty{})
-	if err != nil {
-		return fmt.Errorf("the reset was started but the account list could not be read back, so it is not known whether anything is left: %w", err)
-	}
+	var (
+		remaining int
+		readErr   error
+	)
 
-	if remaining := len(users.GetUsers()); remaining > 0 {
-		return fmt.Errorf("the reset returned but %d account(s) are still signed in; the vault has not been emptied", remaining)
-	}
+	for {
+		users, err := client.GetUserList(ctx, &emptypb.Empty{})
 
-	return nil
+		switch {
+		case err != nil:
+			readErr = err
+		case len(users.GetUsers()) == 0:
+			return nil
+		default:
+			remaining, readErr = len(users.GetUsers()), nil
+		}
+
+		select {
+		case <-ctx.Done():
+			if readErr != nil {
+				return fmt.Errorf("the reset was started but the account list could not be read back in time, so it is not known whether anything is left: %w", readErr)
+			}
+
+			return fmt.Errorf("the reset was started but %d account(s) are still signed in; the vault has not been emptied", remaining)
+
+		case <-time.After(interval):
+		}
+	}
 }

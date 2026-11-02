@@ -36,6 +36,10 @@ import (
 
 const callTimeout = 30 * time.Second
 
+// readBackInterval is how often the account list is read while the bridge
+// resets.
+const readBackInterval = 500 * time.Millisecond
+
 // confirmation is what has to be typed. Not "yes": that is the answer to every
 // prompt anyone has ever skimmed.
 const confirmation = "reset"
@@ -126,7 +130,14 @@ func run() error {
 	fmt.Println()
 	fmt.Println("Resetting.")
 
-	if err := control.Reset(ctx, client.BridgeClient); err != nil {
+	// A clock of its own, started now. The one above has been running since
+	// before the question, and reading the warning and every address can take
+	// longer than callTimeout: a confirmed "reset" then failed with "context
+	// deadline exceeded" and did nothing. Found while fixing #74.
+	resetCtx, cancelReset := context.WithTimeout(context.Background(), callTimeout)
+	defer cancelReset()
+
+	if err := control.Reset(resetCtx, client.BridgeClient, readBackInterval); err != nil {
 		return err
 	}
 
