@@ -4,6 +4,8 @@ The official [Proton Mail Bridge](https://github.com/ProtonMail/proton-bridge), 
 
 This is an unofficial project. It is not built, endorsed or supported by Proton.
 
+**Largely AI-generated.** Most of the code, tests and documentation in this repository were written by Anthropic's Claude Opus models. I decide what gets built and how, and I note this on every one of my projects that is largely AI-generated.
+
 ## Status
 
 Early development. This section always states what actually works, not what is planned.
