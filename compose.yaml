@@ -19,7 +19,7 @@ services:
     # you tagged:
     #
     #   image: proton-mail-bridge:local
-    image: ghcr.io/rndmjoker/proton-mail-bridge-docker:3.25
+    image: ghcr.io/rndmjoker/proton-mail-bridge-docker:3.27
     container_name: proton-bridge
 
     # Pin to a digest instead once you have one you trust. All the tags move:

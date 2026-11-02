@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/bridgepb"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/config"
@@ -55,6 +56,11 @@ type stubClient struct {
 	repairErr    error
 	resetErr     error
 	userListErr  error
+
+	// listScript is answered before userList, one entry per read, for a bridge
+	// that is still in the middle of a reset. listReads counts every read.
+	listScript []listAnswer
+	listReads  int
 
 	dohErr       error
 	dohGetErr    error
@@ -510,13 +516,39 @@ func (s *stubClient) TriggerReset(_ context.Context, _ *emptypb.Empty, _ ...grpc
 	return &emptypb.Empty{}, nil
 }
 
+// listAnswer is one scripted reply to GetUserList.
+type listAnswer struct {
+	users []*bridgepb.User
+	err   error
+}
+
 func (s *stubClient) GetUserList(_ context.Context, _ *emptypb.Empty, _ ...grpc.CallOption) (*bridgepb.UserListResponse, error) {
+	s.listReads++
+
+	if len(s.listScript) > 0 {
+		answer := s.listScript[0]
+		s.listScript = s.listScript[1:]
+
+		if answer.err != nil {
+			return nil, answer.err
+		}
+
+		return &bridgepb.UserListResponse{Users: answer.users}, nil
+	}
+
 	if s.userListErr != nil {
 		return nil, s.userListErr
 	}
 
 	return &bridgepb.UserListResponse{Users: s.userList}, nil
 }
+
+// Reset waits for a reset to finish, so the tests that never let it finish
+// need a deadline. resetInterval keeps all of them fast.
+const (
+	resetInterval = time.Millisecond
+	resetDeadline = 50 * time.Millisecond
+)
 
 // TestResetFailsWhenAnAccountSurvives is the point of this whole command.
 //
@@ -528,7 +560,10 @@ func TestResetFailsWhenAnAccountSurvives(t *testing.T) {
 	stub.userList = []*bridgepb.User{{Username: "someone@example.invalid"}}
 	stub.swallowReset = true
 
-	err := Reset(context.Background(), stub)
+	ctx, cancel := context.WithTimeout(context.Background(), resetDeadline)
+	defer cancel()
+
+	err := Reset(ctx, stub, resetInterval)
 	if err == nil {
 		t.Fatal("Reset reported success although an account is still signed in")
 	}
@@ -542,12 +577,39 @@ func TestResetSucceedsWhenTheVaultIsEmptied(t *testing.T) {
 	stub := newStub()
 	stub.userList = []*bridgepb.User{{Username: "someone@example.invalid"}}
 
-	if err := Reset(context.Background(), stub); err != nil {
+	if err := Reset(context.Background(), stub, resetInterval); err != nil {
 		t.Fatalf("Reset: %v", err)
 	}
 
 	if !stub.resetCalled {
 		t.Error("the bridge was never asked to reset")
+	}
+}
+
+// TestResetWaitsForTheBridgeToFinish is #74 as it was measured on 2026-11-02.
+//
+// The bridge resets in the background. Read during that, its list still holds
+// the account, then fails because the account vanished between listing and
+// lookup, and only then comes back empty. The first two are "not yet", not an
+// answer.
+func TestResetWaitsForTheBridgeToFinish(t *testing.T) {
+	stub := newStub()
+	account := &bridgepb.User{Username: "someone@example.invalid"}
+	stub.userList = []*bridgepb.User{account}
+	stub.listScript = []listAnswer{
+		{users: []*bridgepb.User{account}},
+		{err: errors.New("failed to get user info: no such user")},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if err := Reset(ctx, stub, resetInterval); err != nil {
+		t.Fatalf("Reset gave up on a reset that finished: %v", err)
+	}
+
+	if stub.listReads != 3 {
+		t.Errorf("read the list %d times, want 3: the account, the failed lookup, the empty list", stub.listReads)
 	}
 }
 
@@ -557,8 +619,16 @@ func TestResetFailsWhenTheListCannotBeRead(t *testing.T) {
 	stub := newStub()
 	stub.userListErr = errors.New("nope")
 
-	if err := Reset(context.Background(), stub); err == nil {
-		t.Error("Reset reported success although it could not check")
+	ctx, cancel := context.WithTimeout(context.Background(), resetDeadline)
+	defer cancel()
+
+	err := Reset(ctx, stub, resetInterval)
+	if err == nil {
+		t.Fatal("Reset reported success although it could not check")
+	}
+
+	if !strings.Contains(err.Error(), "could not be read back") {
+		t.Errorf("the error does not say what is unknown: %v", err)
 	}
 }
 

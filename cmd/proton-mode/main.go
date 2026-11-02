@@ -36,6 +36,7 @@ import (
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/bridgeclient"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/bridgepb"
 	"github.com/RndmJoker/proton-mail-bridge-docker/internal/control"
+	"github.com/RndmJoker/proton-mail-bridge-docker/internal/progress"
 	"golang.org/x/term"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
@@ -138,7 +139,11 @@ func run(args []string) error {
 	fmt.Println()
 	fmt.Println("Asking the bridge to switch, and waiting until it reports the new mode...")
 
+	// Up to switchTimeout without a word otherwise, #73.
+	spinner := progress.Start("Waiting for the bridge")
 	after, err := control.SetSplitMode(switchCtx, client.BridgeClient, user.GetId(), *split, readBackInterval)
+	spinner.Stop()
+
 	if err != nil {
 		return err
 	}

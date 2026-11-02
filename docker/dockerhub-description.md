@@ -4,6 +4,8 @@ The official [Proton Mail Bridge](https://github.com/ProtonMail/proton-bridge), 
 
 **Unofficial.** Not built, endorsed or supported by Proton.
 
+**Largely AI-generated.** Most of the code, tests and documentation in this repository were written by Anthropic's Claude Opus models. I decide what gets built and how, and I note this on every one of my projects that is largely AI-generated.
+
 Source, issues and full documentation: **https://github.com/RndmJoker/proton-mail-bridge-docker**
 
 ## Read this before you start it
@@ -32,7 +34,7 @@ docker run -d --name proton-bridge \
 docker exec -it proton-bridge proton-login
 ```
 
-`proton-login` asks whether the addresses of the account share one mailbox or get one each, then for your Proton credentials and whatever Proton asks for next. Nothing you type is echoed, logged or stored. Afterwards `docker exec proton-bridge proton-info` shows the bridge password your mail client needs. Either way there is one bridge password per account, and it opens every address.
+`proton-login` asks whether the addresses of the account share one mailbox or get one each, then for your Proton credentials and whatever Proton asks for next. Passwords stay hidden while you type them, and no password or code goes to a log. Afterwards `docker exec proton-bridge proton-info` shows the bridge password your mail client needs. Either way there is one bridge password per account, and it opens every address.
 
 ## Tags
 
