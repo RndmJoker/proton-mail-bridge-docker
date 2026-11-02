@@ -61,7 +61,7 @@ body:
     id: bridge-version
     attributes:
       label: Bridge version
-      description: Shown by proton-info, for example 3.25.0.
+      description: Shown by proton-info, for example 3.27.1.
 
   - type: checkboxes
     id: hygiene
