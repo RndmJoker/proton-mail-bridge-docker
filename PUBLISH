@@ -20,7 +20,19 @@
 # green one would claim something was published. Skipped is what actually
 # happened.
 #
+# `yes` is not enough on its own. The workflow can also be switched off at
+# GitHub, and while it is, nothing runs whatever this file says. That second
+# brake is a setting and does not show up in a diff, which is the very thing
+# this file was written against, so it is named here instead. It was switched
+# off on 2026-07-31 for #40 and switched on again for #58. Check it with:
+#
+#   gh api repos/RndmJoker/proton-mail-bridge-docker/actions/workflows/publish.yml --jq .state
+#
+# `yes` since 2026-11-02, so that the nightly rebuild reaches a published image
+# again. Until then nothing was published at all, and Debian's security updates
+# reached nobody (#58).
+#
 # Plain shell assignment, no expansion, no quotes: read by `source` in scripts
 # and by grep in CI, the same as docker/bridge-version.
 
-PUBLISH=no
+PUBLISH=yes
