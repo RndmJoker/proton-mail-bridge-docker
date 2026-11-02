@@ -219,7 +219,7 @@ else
     fail "does not report version $BRIDGE_VERSION"
 fi
 
-# The Makefile defaults would produce "3.25.0+git" and a dev build environment.
+# The Makefile defaults would produce "<version>+git" and a dev build environment.
 # If either default slipped through, the bridge would identify itself to Proton
 # as a development build.
 if printf '%s' "$version_output" | grep -qF '+git'; then

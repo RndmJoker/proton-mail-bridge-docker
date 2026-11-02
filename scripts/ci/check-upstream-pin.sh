@@ -4,9 +4,9 @@
 #
 # This is the check the pinning exists for. The image is built from the hash,
 # never from the tag, so a moved tag cannot change what gets built. What it
-# would change is the meaning of the record: docker/bridge-version says this
-# image is Proton's v3.25.0, and that claim is only true as long as the tag
-# still points where it did.
+# would change is the meaning of the record: docker/bridge-version says which
+# of Proton's releases this image is, and that claim is only true as long as
+# the tag still points where it did.
 #
 # A tag can be moved by whoever controls the upstream repository, and after a
 # takeover that is the cheapest thing to do. It leaves no trace in a build that
